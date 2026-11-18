@@ -5,7 +5,9 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    # Dependabot branches are tested by their pull request instead, so
+    # they are not built twice.
+    branches-ignore: ["dependabot/**"]
     tags-ignore: ["v*"]
   pull_request:
   workflow_dispatch:
