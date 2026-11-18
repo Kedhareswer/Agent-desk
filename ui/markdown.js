@@ -28,7 +28,21 @@
       if (list) html.push(`<${list.tag}>${list.items.map((i) => `<li>${inline(i)}</li>`).join("")}</${list.tag}>`);
       list = null;
     };
-    for (const line of text.split("\n")) {
+    const lines = text.split("\n");
+    const cells = (row) => row.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+    for (let n = 0; n < lines.length; n++) {
+      const line = lines[n];
+      // A table: a header row, a |---|---| row, then body rows.
+      if (line.includes("|") && /^\s*\|?[\s:-]*-[\s:|-]*$/.test(lines[n + 1] || "") && (lines[n + 1] || "").includes("|")) {
+        flushPara(); flushList();
+        const head = cells(line);
+        const body = [];
+        n += 2;
+        while (n < lines.length && lines[n].includes("|") && lines[n].trim()) body.push(cells(lines[n++]));
+        n--;
+        html.push(`<div class="table"><table><thead><tr>${head.map((c) => `<th>${inline(c)}</th>`).join("")}</tr></thead><tbody>${body.map((r) => `<tr>${r.map((c) => `<td>${inline(c)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`);
+        continue;
+      }
       const heading = /^(#{1,4})\s+(.*)$/.exec(line);
       const bullet = /^\s*[-*•]\s+(.*)$/.exec(line);
       const numbered = /^\s*\d+[.)]\s+(.*)$/.exec(line);
@@ -59,8 +73,9 @@
       .map((part, i) => {
         if (i % 2 === 0) return blocks(part);
         const nl = part.indexOf("\n");
+        const lang = nl === -1 ? "" : part.slice(0, nl).trim().replace(/[^\w+#.-]/g, "");
         const code = nl === -1 ? part : part.slice(nl + 1);
-        return `<pre><code>${esc(code.replace(/\n$/, ""))}</code></pre>`;
+        return `<div class="code"><div class="code-head"><span>${lang || "code"}</span><button type="button" class="copy-code">Copy</button></div><pre><code>${esc(code.replace(/\n$/, ""))}</code></pre></div>`;
       })
       .join("");
   };

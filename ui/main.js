@@ -7,11 +7,13 @@ const $ = (id) => document.getElementById(id);
 const el = {
   shell: $("shell"), card: $("card"), prompt: $("prompt"), send: $("send"), stop: $("stop"),
   screenChip: $("screen-chip"), modelChip: $("model-chip"), newChat: $("new-chat"), openSettings: $("open-settings"),
-  notice: $("notice"), thread: $("thread"), actions: $("actions"), insert: $("insert"), copy: $("copy"), hint: $("hint"),
+  notice: $("notice"), thread: $("thread"), actions: $("actions"), insert: $("insert"), copy: $("copy"),
+  suggest: $("suggest"), stat: $("stat"), toast: $("toast"), escLabel: $("esc-label"), footInsert: $("foot-insert"), footCopy: $("foot-copy"),
   settings: $("settings"), settingsMsg: $("settings-msg"), shortcutInput: $("shortcut-input"), settingsCancel: $("settings-cancel"),
 };
 
 const MODELS = { haiku: "Haiku · fastest", sonnet: "Sonnet · balanced", opus: "Opus · most capable" };
+const DOTS = '<span class="dots" aria-label="Thinking"><i></i><i></i><i></i></span>';
 
 const state = {
   settings: null,
@@ -25,7 +27,21 @@ const state = {
   answerNode: null,
   startFresh: false,   // the engine lost the conversation; clear before the next question
   lastActivity: Date.now(),
+  askedAt: 0,
 };
+
+const setChip = (chip, icon, text) => {
+  chip.querySelector("use").setAttribute("href", "#" + icon);
+  chip.querySelector("span").textContent = text;
+};
+
+let toastTimer;
+function toast(text) {
+  el.toast.textContent = text;
+  el.toast.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.toast.classList.remove("show"), 1500);
+}
 
 /* ---------- drawing ---------- */
 
@@ -39,23 +55,20 @@ function setBusy(busy) {
 }
 
 function refreshActions() {
+  const settingsOpen = !el.settings.hidden;
+  const empty = el.thread.children.length === 0;
   const hasAnswer = !state.busy && state.answer.trim().length > 0;
-  el.actions.hidden = !hasAnswer || !el.settings.hidden;
-  el.newChat.hidden = el.thread.children.length === 0;
-  markLast();
+  el.actions.hidden = !hasAnswer || settingsOpen;
+  el.footInsert.hidden = el.footCopy.hidden = !hasAnswer || settingsOpen;
+  el.newChat.hidden = empty;
+  el.suggest.hidden = !empty || settingsOpen || state.busy;
+  el.openSettings.classList.toggle("active", settingsOpen);
+  el.escLabel.textContent = settingsOpen ? "Close settings" : state.busy ? "Stop" : "Hide";
 }
 
-// Round the bottom corners of whichever section is currently last.
-function markLast() {
-  const visible = [...el.card.children].filter((c) => !c.hidden);
-  visible.forEach((c, i) => c.classList.toggle("last", i === visible.length - 1));
-}
-
-function showNotice(text, isError = false) {
-  el.notice.textContent = text || "";
+function showNotice(text) {
+  el.notice.querySelector("span").textContent = text || "";
   el.notice.hidden = !text;
-  el.notice.classList.toggle("error", isError);
-  markLast();
 }
 
 function renderChips() {
@@ -64,16 +77,21 @@ function renderChips() {
   const app = (c.process || "").replace(/\.exe$/i, "");
   const where = c.title ? `${c.title}` : app;
   if (!s.include_screen) {
-    el.screenChip.textContent = "Screen off";
+    setChip(el.screenChip, "i-eye-off", "Screen off");
     el.screenChip.classList.remove("on");
   } else if (c.has_screen) {
-    el.screenChip.textContent = state.screenOn ? `Seeing: ${where || "your screen"}` : "Screen not included";
+    setChip(el.screenChip, state.screenOn ? "i-eye" : "i-eye-off", state.screenOn ? `Seeing: ${where || "your screen"}` : "Screen not included");
     el.screenChip.classList.toggle("on", state.screenOn);
   } else {
-    el.screenChip.textContent = el.thread.children.length ? "Screen already sent" : "No screenshot";
+    setChip(el.screenChip, "i-eye-off", el.thread.children.length ? "Screen already sent" : "No screenshot");
     el.screenChip.classList.remove("on");
   }
-  el.modelChip.textContent = s.provider === "codex" ? `Codex${s.codex_model ? " · " + s.codex_model : ""}` : `Claude ${MODELS[s.claude_model] || s.claude_model}`;
+  setChip(el.modelChip, "i-bolt", modelName());
+}
+
+function modelName() {
+  const s = state.settings;
+  return s.provider === "codex" ? `Codex${s.codex_model ? " · " + s.codex_model : ""}` : `Claude ${MODELS[s.claude_model] || s.claude_model}`;
 }
 
 function addMessage(kind, text) {
@@ -94,7 +112,7 @@ function renderAnswer() {
     renderQueued = false;
     if (!state.answerNode) return;
     const stick = el.thread.scrollHeight - el.thread.scrollTop - el.thread.clientHeight < 40;
-    state.answerNode.innerHTML = state.answer ? window.renderMarkdown(state.answer) : '<p class="thinking">Thinking…</p>';
+    state.answerNode.innerHTML = state.answer ? window.renderMarkdown(state.answer) : DOTS;
     if (stick) el.thread.scrollTop = el.thread.scrollHeight;
   });
 }
@@ -115,16 +133,19 @@ function growPrompt() {
 
 /* ---------- actions ---------- */
 
-async function send() {
+// `preset` is a quick action: its label is shown, its full prompt is sent.
+async function send(preset) {
   if (state.busy || !el.settings.hidden) return;
-  const text = el.prompt.value.trim();
+  const text = preset ? preset.prompt : el.prompt.value.trim();
   if (state.startFresh) clearThread();
   const withScreen = state.settings.include_screen && state.screenOn && state.context.has_screen;
   showNotice("");
-  addMessage("user", text || "Help with what's on my screen");
+  addMessage("user", preset ? preset.label : text || "Help with what's on my screen");
+  state.askedAt = performance.now();
+  el.stat.textContent = "";
   state.answer = "";
   state.answerNode = addMessage("ai", "");
-  renderAnswer();
+  state.answerNode.innerHTML = DOTS;
   el.prompt.value = "";
   growPrompt();
   setBusy(true);
@@ -145,8 +166,10 @@ async function send() {
 
 function fail(message) {
   if (state.answerNode && !state.answer) state.answerNode.remove();
+  if (state.answerNode) state.answerNode.classList.remove("streaming");
   state.answerNode = null;
-  addMessage("error", message);
+  state.answer = ""; // a cut-off answer is not offered for Insert
+  addMessage("error", message).insertAdjacentHTML("afterbegin", '<svg class="icon"><use href="#i-warn"/></svg>');
   state.startFresh = true;
   setBusy(false);
 }
@@ -181,8 +204,7 @@ async function insertAnswer() {
 async function copyAnswer() {
   if (!state.answer.trim()) return;
   await invoke("copy_text", { text: state.answer.trim() });
-  el.hint.textContent = "Copied";
-  setTimeout(() => (el.hint.textContent = "Esc to hide"), 1400);
+  toast("Copied");
 }
 
 async function cycleModel() {
@@ -261,7 +283,19 @@ function acceleratorFrom(e) {
 /* ---------- wiring ---------- */
 
 el.prompt.addEventListener("input", growPrompt);
-el.send.addEventListener("click", send);
+el.send.addEventListener("click", () => send());
+el.suggest.addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (b) send({ label: b.textContent, prompt: b.dataset.prompt });
+});
+// Copy buttons on code blocks.
+el.thread.addEventListener("click", async (e) => {
+  const b = e.target.closest(".copy-code");
+  if (!b) return;
+  await invoke("copy_text", { text: b.closest(".code").querySelector("pre").textContent });
+  toast("Code copied");
+});
+el.card.addEventListener("animationend", (e) => e.animationName === "pop" && el.card.classList.remove("pop"));
 el.stop.addEventListener("click", stop);
 el.newChat.addEventListener("click", newChat);
 el.insert.addEventListener("click", insertAnswer);
@@ -347,6 +381,7 @@ function onAiEvent(payload) {
     renderAnswer();
   } else if (payload.kind === "done") {
     state.lastActivity = Date.now();
+    el.stat.textContent = `${modelName().split(" · ")[0]} · ${((performance.now() - state.askedAt) / 1000).toFixed(1)}s`;
     setBusy(false);
   } else if (payload.kind === "error") {
     fail(payload.text);
@@ -364,6 +399,10 @@ listen("wake", ({ payload }) => {
   state.screenOn = true;
   if (!el.settings.hidden) closeSettings();
   renderChips();
+  refreshActions();
+  el.card.classList.remove("pop");
+  void el.card.offsetWidth; // restart the entrance animation
+  el.card.classList.add("pop");
   el.prompt.focus();
   el.prompt.select();
 });

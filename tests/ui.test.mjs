@@ -62,6 +62,10 @@ assert.match(await page.textContent("#model-chip"), /Claude Haiku/);
 assert.ok(await page.isHidden("#thread"));
 await snap("1-idle");
 
+// Quick actions are offered on an empty conversation and send a full prompt.
+assert.equal(await page.locator("#suggest button").count(), 5);
+assert.ok(await page.isVisible("#suggest"));
+
 // Asking sends the prompt with the screenshot and streams the answer.
 await page.fill("#prompt", "draft a reply");
 await page.keyboard.press("Enter");
@@ -81,14 +85,21 @@ await emit("ai", { turn: 1, kind: "done", text: "" });
 await page.waitForSelector("#actions:not([hidden])");
 assert.doesNotMatch(await page.textContent(".msg.ai"), /STALE/);
 assert.equal(await page.textContent("#screen-chip"), "Screen already sent");
+assert.ok(await page.isHidden("#suggest"));
+assert.match(await page.textContent("#stat"), /^Claude Haiku · \d+\.\ds$/);
 await snap("3-answer");
+
+// A code block has its own copy button.
+await page.click(".copy-code");
+assert.deepEqual((await calls("copy_text")).at(-1), { text: "const x = 1 < 2;" });
+assert.equal(await page.textContent("#toast"), "Code copied");
 
 // Insert and copy pass the raw answer text, not HTML.
 await page.keyboard.press("Control+Enter");
 const inserted = (await calls("insert_text"))[0].text;
 assert.ok(inserted.startsWith("Hi Ben,") && inserted.includes("**on track**"));
 await page.click("#copy");
-assert.equal((await calls("copy_text")).length, 1);
+assert.equal((await calls("copy_text")).length, 2);
 
 // Model output is never treated as HTML.
 await page.fill("#prompt", "x");
@@ -122,6 +133,18 @@ await snap("4-error");
 await page.keyboard.press("Control+n");
 assert.ok(await page.isHidden("#thread"));
 assert.equal((await calls("new_chat")).length, 1);
+
+// A quick action shows its short label and sends the full prompt.
+await page.click('#suggest button:has-text("Summarize")');
+assert.equal(await page.textContent(".msg.user"), "Summarize");
+assert.match((await calls("ask")).at(-1).prompt, /^Summarize what is on my screen/);
+await emit("ai", { turn: 5, kind: "delta", text: "| App | Status |\n|---|---|\n| Mail | 3 unread |\n| Slack | quiet |" });
+await emit("ai", { turn: 5, kind: "done", text: "" });
+await page.waitForSelector(".msg.ai table");
+assert.equal(await page.locator(".msg.ai td").count(), 4);
+await snap("6-table");
+await page.keyboard.press("Control+n");
+assert.ok(await page.isVisible("#suggest"));
 
 // A failed ask (for example, CLI missing) is shown, not swallowed.
 await page.evaluate(() => (window.__fake.failAsk = "The `claude` command was not found."));
