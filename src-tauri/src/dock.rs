@@ -33,7 +33,11 @@ pub fn snap(win: Rect, screen: Rect, grip: i32) -> (Edge, f64) {
         (Edge::Left, win.x - screen.x),
         (Edge::Right, screen.x + screen.w - (win.x + win.w)),
     ];
-    let edge = distances.iter().min_by_key(|d| d.1).map(|d| d.0).unwrap_or(Edge::Top);
+    let edge = distances
+        .iter()
+        .min_by_key(|d| d.1)
+        .map(|d| d.0)
+        .unwrap_or(Edge::Top);
     let along = match edge {
         Edge::Top | Edge::Bottom => (cx - screen.x) as f64 / screen.w.max(1) as f64,
         Edge::Left | Edge::Right => (win.y + grip / 2 - screen.y) as f64 / screen.h.max(1) as f64,
@@ -59,7 +63,12 @@ pub fn place(edge: Edge, along: f64, size: (i32, i32), screen: Rect, grip: i32) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    const SCREEN: Rect = Rect { x: 0, y: 0, w: 1920, h: 1040 };
+    const SCREEN: Rect = Rect {
+        x: 0,
+        y: 0,
+        w: 1920,
+        h: 1040,
+    };
 
     #[test]
     fn default_sits_top_centre() {
@@ -86,17 +95,62 @@ mod tests {
 
     #[test]
     fn dropping_near_an_edge_snaps_to_it() {
-        assert_eq!(snap(Rect { x: 1500, y: 300, w: 400, h: 60 }, SCREEN, 60).0, Edge::Right);
-        assert_eq!(snap(Rect { x: 700, y: 900, w: 400, h: 60 }, SCREEN, 60).0, Edge::Bottom);
-        let (edge, along) = snap(Rect { x: 200, y: 20, w: 400, h: 60 }, SCREEN, 60);
+        assert_eq!(
+            snap(
+                Rect {
+                    x: 1500,
+                    y: 300,
+                    w: 400,
+                    h: 60
+                },
+                SCREEN,
+                60
+            )
+            .0,
+            Edge::Right
+        );
+        assert_eq!(
+            snap(
+                Rect {
+                    x: 700,
+                    y: 900,
+                    w: 400,
+                    h: 60
+                },
+                SCREEN,
+                60
+            )
+            .0,
+            Edge::Bottom
+        );
+        let (edge, along) = snap(
+            Rect {
+                x: 200,
+                y: 20,
+                w: 400,
+                h: 60,
+            },
+            SCREEN,
+            60,
+        );
         assert_eq!(edge, Edge::Top);
         assert!((along - 400.0 / 1920.0).abs() < 1e-9);
     }
 
     #[test]
     fn snap_then_place_round_trips_on_a_second_monitor() {
-        let second = Rect { x: 1920, y: 0, w: 2560, h: 1400 };
-        let win = Rect { x: 1920, y: 600, w: 400, h: 60 };
+        let second = Rect {
+            x: 1920,
+            y: 0,
+            w: 2560,
+            h: 1400,
+        };
+        let win = Rect {
+            x: 1920,
+            y: 600,
+            w: 400,
+            h: 60,
+        };
         let (edge, along) = snap(win, second, 60);
         assert_eq!(edge, Edge::Left);
         assert_eq!(place(edge, along, (400, 60), second, 60), (1920, 600));

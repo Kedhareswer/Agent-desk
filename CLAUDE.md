@@ -65,7 +65,17 @@ ui/                         Plain HTML/CSS/JS – no framework, no build step
   markdown.js               Small safe Markdown renderer (escapes first)
   glow.html                 Click-through screen-edge glow
 tests/ui.test.mjs           Playwright test of the UI with a fake Tauri bridge
-.github/workflows/build.yml Windows installer build + UI tests
+scripts/version.mjs         One version everywhere; changelog → release notes
+scripts/packaging.mjs       Scoop / winget / Chocolatey manifests + SHA256SUMS
+packaging/README.md         One-time package manager setup (secrets, first
+                            winget submission)
+bucket/agent-desk.json      Scoop manifest, written by the release workflow
+.github/workflows/ci.yml    Every push/PR: fmt, version check, actionlint,
+                            UI test (+ screenshots), cargo test, clippy,
+                            Windows installer build
+.github/workflows/release.yml  Tag v* → installer + portable zip → GitHub
+                            Release → Scoop bucket, winget, Chocolatey
+.github/workflows/audit.yml Weekly cargo audit + npm audit
 ```
 
 ## How the pieces talk
@@ -187,12 +197,27 @@ Requirements: Rust stable, Node 22, CMake, LLVM/Clang (whisper.cpp is built
 from source). On Windows, WebView2 (preinstalled on Windows 11).
 
 ```bash
-npm install
+npm ci && npx playwright install chromium
 npm run dev                                   # run the app
-cargo test --manifest-path src-tauri/Cargo.toml
-NODE_PATH=$(npm root -g) node tests/ui.test.mjs [screenshot-dir]
+npm test                                      # cargo test + UI test
+npm run test:ui -- <screenshot-dir>           # UI test with screenshots
+npm run format && npm run lint                # rustfmt, clippy, version check
 npx tauri build                               # Windows installer (on Windows)
 ```
+
+### Versions and releases
+
+`package.json` holds the version; `tauri.conf.json` points at it and
+`scripts/version.mjs` keeps `Cargo.toml`, `Cargo.lock` and
+`package-lock.json` in step (CI fails if they drift). Release with
+`npm run release:version -- X.Y.Z`, commit, then push tag `vX.Y.Z`; the
+release workflow refuses a tag that does not match the files. Its notes
+come from that version's section of `CHANGELOG.md`, so add user-facing
+changes under **Unreleased** as you go. Package manager identity (names,
+ids, description) is the `ID` block in `scripts/packaging.mjs`.
+
+CI fails on `clippy::correctness` and `clippy::suspicious` only; other
+lints are warnings.
 
 Ignored tests that need real resources:
 
@@ -209,14 +234,14 @@ cargo test --manifest-path src-tauri/Cargo.toml --release -- --ignored live_whis
 From Linux, `src-tauri/cross/build-windows.sh` cross-compiles a Windows
 test build (needs `mingw-w64`). It works around whisper.cpp's MinGW library
 names and an old MinGW header (`cross/mingw-shim.h`). The real release path
-is the GitHub Actions workflow on `windows-latest`.
+is the Release workflow on `windows-latest`.
 
 The app builds and runs on Linux for development; Windows-only parts
 (screenshot, paste, keyboard hook, loopback audio) are stubbed there.
 
 ### Before you finish a change
 
-1. `cargo test` passes and `cargo check --target x86_64-pc-windows-gnu`
+1. `cargo fmt --check` and `cargo test` pass, and `cargo check --target x86_64-pc-windows-gnu`
    (or the cross script) still compiles the Windows code.
 2. `tests/ui.test.mjs` passes. Add assertions for any UI behaviour you
    change; it fakes the Rust side with `window.__TAURI__`.

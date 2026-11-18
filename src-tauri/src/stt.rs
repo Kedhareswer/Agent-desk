@@ -23,7 +23,11 @@ pub const MODELS: &[(&str, &str, u64)] = &[
 const BASE_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main";
 
 fn lookup(name: &str) -> (&'static str, u64) {
-    MODELS.iter().find(|m| m.0 == name).map(|m| (m.1, m.2)).unwrap_or((MODELS[1].1, MODELS[1].2))
+    MODELS
+        .iter()
+        .find(|m| m.0 == name)
+        .map(|m| (m.1, m.2))
+        .unwrap_or((MODELS[1].1, MODELS[1].2))
 }
 
 pub fn model_path(dir: &Path, name: &str) -> PathBuf {
@@ -48,15 +52,25 @@ pub fn ensure_model(dir: &Path, name: &str, progress: &dyn Fn(u8)) -> Result<Pat
     std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
     let partial = path.with_extension("part");
     let mut cmd = Command::new("curl");
-    cmd.args(["--location", "--fail", "--silent", "--show-error", "--continue-at", "-", "--output"])
-        .arg(&partial)
-        .arg(format!("{BASE_URL}/{file}"));
+    cmd.args([
+        "--location",
+        "--fail",
+        "--silent",
+        "--show-error",
+        "--continue-at",
+        "-",
+        "--output",
+    ])
+    .arg(&partial)
+    .arg(format!("{BASE_URL}/{file}"));
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000);
     }
-    let mut child = cmd.spawn().map_err(|e| format!("Could not start the download (curl): {e}"))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Could not start the download (curl): {e}"))?;
     let status = loop {
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
             break status;
@@ -88,7 +102,10 @@ pub struct Transcriber {
 impl Transcriber {
     /// Load the model into memory (a no-op when it already is).
     pub fn load(&self, dir: &Path, name: &str) -> Result<(), String> {
-        let mut slot = self.loaded.lock().map_err(|_| "speech engine lock poisoned")?;
+        let mut slot = self
+            .loaded
+            .lock()
+            .map_err(|_| "speech engine lock poisoned")?;
         *self.last_used.lock().unwrap() = Some(Instant::now());
         if slot.as_ref().is_some_and(|l| l.name == name) {
             return Ok(());
@@ -96,21 +113,34 @@ impl Transcriber {
         let path = model_path(dir, name);
         let ctx = WhisperContext::new_with_params(&path, WhisperContextParameters::default())
             .map_err(|e| format!("Could not load the speech model: {e}"))?;
-        *slot = Some(Loaded { name: name.to_string(), ctx });
+        *slot = Some(Loaded {
+            name: name.to_string(),
+            ctx,
+        });
         Ok(())
     }
 
     /// Turn 16 kHz mono audio into text. `load` must have succeeded first.
     pub fn transcribe(&self, samples: &[f32]) -> Result<String, String> {
-        let slot = self.loaded.lock().map_err(|_| "speech engine lock poisoned")?;
+        let slot = self
+            .loaded
+            .lock()
+            .map_err(|_| "speech engine lock poisoned")?;
         let loaded = slot.as_ref().ok_or("The speech model is not loaded.")?;
         *self.last_used.lock().unwrap() = Some(Instant::now());
 
         let mut state = loaded.ctx.create_state().map_err(|e| e.to_string())?;
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-        let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 8);
+        let threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .clamp(1, 8);
         params.set_n_threads(threads as i32);
-        params.set_language(if loaded.name.ends_with(".en") { Some("en") } else { None });
+        params.set_language(if loaded.name.ends_with(".en") {
+            Some("en")
+        } else {
+            None
+        });
         params.set_print_special(false);
         params.set_print_progress(false);
         params.set_print_realtime(false);
@@ -125,7 +155,9 @@ impl Transcriber {
         if audio.len() < 16_000 + 1_600 {
             audio.resize(16_000 + 1_600, 0.0);
         }
-        state.full(params, &audio).map_err(|e| format!("Speech recognition failed: {e}"))?;
+        state
+            .full(params, &audio)
+            .map_err(|e| format!("Speech recognition failed: {e}"))?;
 
         let mut text = String::new();
         for segment in state.as_iter() {
@@ -136,7 +168,11 @@ impl Transcriber {
 
     /// Free the model after it has not been used for a while.
     pub fn reap_idle(&self, minutes: u32) {
-        let idle = self.last_used.lock().unwrap().is_some_and(|t| t.elapsed().as_secs() >= u64::from(minutes) * 60);
+        let idle = self
+            .last_used
+            .lock()
+            .unwrap()
+            .is_some_and(|t| t.elapsed().as_secs() >= u64::from(minutes) * 60);
         if idle {
             if let Ok(mut slot) = self.loaded.try_lock() {
                 *slot = None;
@@ -168,7 +204,10 @@ mod tests {
     #[test]
     fn noise_tags_are_removed() {
         assert_eq!(clean(" [BLANK_AUDIO] "), "");
-        assert_eq!(clean(" Draft a reply  (keyboard clicking) to Ben."), "Draft a reply to Ben.");
+        assert_eq!(
+            clean(" Draft a reply  (keyboard clicking) to Ben."),
+            "Draft a reply to Ben."
+        );
     }
 
     #[test]
@@ -187,7 +226,10 @@ mod tests {
         let wav = std::env::var("AGENT_DESK_WAV").expect("AGENT_DESK_WAV");
         let mut reader = hound::WavReader::open(wav).unwrap();
         assert_eq!(reader.spec().sample_rate, 16_000);
-        let samples: Vec<f32> = reader.samples::<i16>().map(|s| s.unwrap() as f32 / 32768.0).collect();
+        let samples: Vec<f32> = reader
+            .samples::<i16>()
+            .map(|s| s.unwrap() as f32 / 32768.0)
+            .collect();
 
         let t = Transcriber::default();
         let started = Instant::now();
@@ -195,8 +237,14 @@ mod tests {
         eprintln!("model loaded in {:?}", started.elapsed());
         let started = Instant::now();
         let text = t.transcribe(&samples).unwrap();
-        eprintln!("{:.1}s of audio transcribed in {:?}: {text}", samples.len() as f32 / 16000.0, started.elapsed());
-        let expect = std::env::var("AGENT_DESK_EXPECT").expect("AGENT_DESK_EXPECT").to_lowercase();
+        eprintln!(
+            "{:.1}s of audio transcribed in {:?}: {text}",
+            samples.len() as f32 / 16000.0,
+            started.elapsed()
+        );
+        let expect = std::env::var("AGENT_DESK_EXPECT")
+            .expect("AGENT_DESK_EXPECT")
+            .to_lowercase();
         assert!(text.to_lowercase().contains(&expect), "{text}");
 
         // Silence must come back empty, not as an invented sentence.

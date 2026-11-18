@@ -46,7 +46,12 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            wake_mode: if cfg!(windows) { "ctrl_alt" } else { "shortcut" }.into(),
+            wake_mode: if cfg!(windows) {
+                "ctrl_alt"
+            } else {
+                "shortcut"
+            }
+            .into(),
             shortcut: "Ctrl+Alt+Space".into(),
             provider: "claude".into(),
             claude_model: "haiku".into(),

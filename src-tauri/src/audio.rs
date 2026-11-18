@@ -21,8 +21,12 @@ impl Recording {
     pub fn start(level: impl Fn(f32) + Send + 'static) -> Self {
         let (stop, stopped) = mpsc::channel::<bool>();
         let worker = std::thread::spawn(move || {
-            let device = cpal::default_host().default_input_device().ok_or("No microphone was found.")?;
-            let config = device.default_input_config().map_err(|e| format!("The microphone could not be opened: {e}"))?;
+            let device = cpal::default_host()
+                .default_input_device()
+                .ok_or("No microphone was found.")?;
+            let config = device
+                .default_input_config()
+                .map_err(|e| format!("The microphone could not be opened: {e}"))?;
             let channels = config.channels() as usize;
             let rate = config.sample_rate();
             let buffer = Arc::new(Mutex::new(Vec::<f32>::new()));
@@ -54,14 +58,17 @@ impl Recording {
                 other => return Err(format!("The microphone uses an unsupported format ({other:?}).")),
             }
             .map_err(|e| format!("The microphone could not be opened: {e}. Check Windows microphone privacy settings."))?;
-            stream.play().map_err(|e| format!("The microphone could not start: {e}"))?;
+            stream
+                .play()
+                .map_err(|e| format!("The microphone could not start: {e}"))?;
 
             let keep = stopped.recv().unwrap_or(false);
             drop(stream);
             if !keep {
                 return Ok(Vec::new());
             }
-            let raw = std::mem::take(&mut *buffer.lock().map_err(|_| "audio buffer lock poisoned")?);
+            let raw =
+                std::mem::take(&mut *buffer.lock().map_err(|_| "audio buffer lock poisoned")?);
             Ok(to_16k_mono(&raw, channels, rate))
         });
         Self { stop, worker }
@@ -70,7 +77,9 @@ impl Recording {
     /// Stop and return the audio as 16 kHz mono.
     pub fn finish(self) -> Result<Vec<f32>, String> {
         let _ = self.stop.send(true);
-        self.worker.join().map_err(|_| "The recording thread crashed.".to_string())?
+        self.worker
+            .join()
+            .map_err(|_| "The recording thread crashed.".to_string())?
     }
 
     /// Stop and throw the audio away.
@@ -95,7 +104,10 @@ pub struct Listener {
 }
 
 impl Listener {
-    pub fn start(source: Source, on_audio: impl Fn(&[f32]) + Send + 'static) -> Result<Self, String> {
+    pub fn start(
+        source: Source,
+        on_audio: impl Fn(&[f32]) + Send + 'static,
+    ) -> Result<Self, String> {
         let (stop, stopped) = mpsc::channel::<bool>();
         let (ready, is_ready) = mpsc::channel::<Result<(), String>>();
         std::thread::spawn(move || {
@@ -103,13 +115,21 @@ impl Listener {
                 let host = cpal::default_host();
                 let (device, config) = match source {
                     Source::Microphone => {
-                        let d = host.default_input_device().ok_or("No microphone was found.")?;
-                        let c = d.default_input_config().map_err(|e| format!("The microphone could not be opened: {e}"))?;
+                        let d = host
+                            .default_input_device()
+                            .ok_or("No microphone was found.")?;
+                        let c = d
+                            .default_input_config()
+                            .map_err(|e| format!("The microphone could not be opened: {e}"))?;
                         (d, c)
                     }
                     Source::System => {
-                        let d = host.default_output_device().ok_or("No speakers were found to listen to.")?;
-                        let c = d.default_output_config().map_err(|e| format!("The computer's audio could not be opened: {e}"))?;
+                        let d = host
+                            .default_output_device()
+                            .ok_or("No speakers were found to listen to.")?;
+                        let c = d.default_output_config().map_err(|e| {
+                            format!("The computer's audio could not be opened: {e}")
+                        })?;
                         (d, c)
                     }
                 };
@@ -120,17 +140,26 @@ impl Listener {
                 let format = config.sample_format();
                 let stream_config: cpal::StreamConfig = config.into();
                 let stream = match format {
-                    cpal::SampleFormat::F32 => device.build_input_stream(stream_config, move |d: &[f32], _: &_| push(d), on_error, None),
+                    cpal::SampleFormat::F32 => device.build_input_stream(
+                        stream_config,
+                        move |d: &[f32], _: &_| push(d),
+                        on_error,
+                        None,
+                    ),
                     cpal::SampleFormat::I16 => device.build_input_stream(
                         stream_config,
-                        move |d: &[i16], _: &_| push(&d.iter().map(|s| *s as f32 / 32768.0).collect::<Vec<_>>()),
+                        move |d: &[i16], _: &_| {
+                            push(&d.iter().map(|s| *s as f32 / 32768.0).collect::<Vec<_>>())
+                        },
                         on_error,
                         None,
                     ),
                     other => return Err(format!("Unsupported audio format ({other:?}).")),
                 }
                 .map_err(|e| format!("Audio capture could not start: {e}"))?;
-                stream.play().map_err(|e| format!("Audio capture could not start: {e}"))?;
+                stream
+                    .play()
+                    .map_err(|e| format!("Audio capture could not start: {e}"))?;
                 Ok(stream)
             })();
             match opened {
@@ -144,7 +173,9 @@ impl Listener {
                 }
             }
         });
-        is_ready.recv_timeout(std::time::Duration::from_secs(5)).map_err(|_| "Audio capture did not start in time.".to_string())??;
+        is_ready
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .map_err(|_| "Audio capture did not start in time.".to_string())??;
         Ok(Self { stop })
     }
 }
@@ -184,7 +215,8 @@ impl Segmenter {
         let whole = self.pending.len() / FRAME * FRAME;
         let frames: Vec<f32> = self.pending.drain(..whole).collect();
         for frame in frames.chunks_exact(FRAME) {
-            let loud = (frame.iter().map(|s| s * s).sum::<f32>() / FRAME as f32).sqrt() > SPEECH_RMS;
+            let loud =
+                (frame.iter().map(|s| s * s).sum::<f32>() / FRAME as f32).sqrt() > SPEECH_RMS;
             if !self.speaking {
                 self.pre_roll.extend_from_slice(frame);
                 let keep = PRE_ROLL_FRAMES * FRAME;
@@ -235,7 +267,10 @@ pub fn loudness(chunk: &[f32]) -> f32 {
 /// is plenty for speech recognition).
 pub fn to_16k_mono(samples: &[f32], channels: usize, rate: u32) -> Vec<f32> {
     let channels = channels.max(1);
-    let mono: Vec<f32> = samples.chunks_exact(channels).map(|f| f.iter().sum::<f32>() / channels as f32).collect();
+    let mono: Vec<f32> = samples
+        .chunks_exact(channels)
+        .map(|f| f.iter().sum::<f32>() / channels as f32)
+        .collect();
     if rate == TARGET_RATE || mono.is_empty() {
         return mono;
     }
@@ -256,7 +291,10 @@ pub fn to_16k_mono(samples: &[f32], channels: usize, rate: u32) -> Vec<f32> {
 /// Whisper invents words for pure silence, so silent clips are not sent to it.
 pub fn has_speech(samples: &[f32]) -> bool {
     const WINDOW: usize = 480; // 30 ms
-    let loud = samples.chunks(WINDOW).filter(|w| (w.iter().map(|s| s * s).sum::<f32>() / w.len() as f32).sqrt() > 0.012).count();
+    let loud = samples
+        .chunks(WINDOW)
+        .filter(|w| (w.iter().map(|s| s * s).sum::<f32>() / w.len() as f32).sqrt() > 0.012)
+        .count();
     loud >= 5 // at least 150 ms of sound
 }
 

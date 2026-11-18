@@ -52,9 +52,27 @@ on your own computer.
 
 ## Install
 
-Download `agent-desk-windows` from the latest run of the **Build** workflow
-on GitHub (Actions tab) and run the installer inside. The app is not code
-signed, so Windows SmartScreen will ask you to confirm.
+Pick one:
+
+- **Installer:** download `Agent-Desk_<version>_x64-setup.exe` from
+  [Releases](https://github.com/Kedhareswer/Agent-desk/releases/latest) and
+  run it. It installs for your user only, with no admin prompt.
+- **Portable:** download `Agent-Desk_<version>_x64-portable.zip`, unzip,
+  and run `agent-desk.exe`.
+- **Scoop:**
+
+  ```powershell
+  scoop bucket add agent-desk https://github.com/Kedhareswer/Agent-desk
+  scoop install agent-desk
+  ```
+
+- **winget:** `winget install Kedhareswer.AgentDesk` (once published).
+- **Chocolatey:** `choco install agent-desk` (once published).
+
+Each release lists SHA-256 checksums in `SHA256SUMS.txt`. The app is not
+code signed yet, so Windows SmartScreen will ask you to confirm. Builds of
+unreleased changes are attached to every CI run (Actions tab, artifact
+`agent-desk-windows`).
 
 ## Keys
 
@@ -122,7 +140,11 @@ own name in the tray and Task Manager.
 ## Develop
 
 ```bash
-npm install
+npm ci
+```
+
+```bash
+npx playwright install chromium
 ```
 
 ```bash
@@ -130,17 +152,17 @@ npm run dev
 ```
 
 ```bash
-cargo test --manifest-path src-tauri/Cargo.toml
+npm test
 ```
 
 ```bash
-node tests/ui.test.mjs
+npm run lint
 ```
 
-Building needs CMake and LLVM/Clang as well as Rust and Node, because the
-speech engine (whisper.cpp) is compiled from source.
-
-The UI test needs Playwright (`npm install --no-save playwright`). A live
+Building needs CMake and LLVM/Clang as well as Rust and Node 22, because
+the speech engine (whisper.cpp) is compiled from source. `npm test` runs
+the Rust unit tests and the Playwright UI test. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for pull requests and releasing. A live
 end-to-end test against a signed-in Claude CLI runs with
 `cargo test --manifest-path src-tauri/Cargo.toml -- --ignored live_claude`.
 

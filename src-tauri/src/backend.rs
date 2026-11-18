@@ -80,7 +80,9 @@ pub enum Parsed {
 
 /// Interpret one line of `claude --output-format stream-json`.
 pub fn parse_claude_line(line: &str) -> Parsed {
-    let Ok(v) = serde_json::from_str::<Value>(line) else { return Parsed::Ignore };
+    let Ok(v) = serde_json::from_str::<Value>(line) else {
+        return Parsed::Ignore;
+    };
     match v["type"].as_str() {
         Some("stream_event") => {
             let ev = &v["event"];
@@ -98,7 +100,9 @@ pub fn parse_claude_line(line: &str) -> Parsed {
             }
         }
         Some("result") if v["is_error"].as_bool() == Some(true) => {
-            let msg = v["result"].as_str().unwrap_or("The Claude CLI reported an error.");
+            let msg = v["result"]
+                .as_str()
+                .unwrap_or("The Claude CLI reported an error.");
             Parsed::Error(msg.to_string())
         }
         _ => Parsed::Ignore,
@@ -107,7 +111,9 @@ pub fn parse_claude_line(line: &str) -> Parsed {
 
 /// Interpret one line of `codex exec --json`.
 pub fn parse_codex_line(line: &str) -> Parsed {
-    let Ok(v) = serde_json::from_str::<Value>(line) else { return Parsed::Ignore };
+    let Ok(v) = serde_json::from_str::<Value>(line) else {
+        return Parsed::Ignore;
+    };
     match v["type"].as_str() {
         Some("thread.started") => match v["thread_id"].as_str() {
             Some(id) => Parsed::Thread(id.to_string()),
@@ -117,8 +123,18 @@ pub fn parse_codex_line(line: &str) -> Parsed {
             Parsed::Delta(format!("{}\n\n", v["item"]["text"].as_str().unwrap_or("")))
         }
         Some("turn.completed") => Parsed::Done,
-        Some("turn.failed") => Parsed::Error(v["error"]["message"].as_str().unwrap_or("Codex could not finish the turn.").to_string()),
-        Some("error") => Parsed::Error(v["message"].as_str().unwrap_or("Codex reported an error.").to_string()),
+        Some("turn.failed") => Parsed::Error(
+            v["error"]["message"]
+                .as_str()
+                .unwrap_or("Codex could not finish the turn.")
+                .to_string(),
+        ),
+        Some("error") => Parsed::Error(
+            v["message"]
+                .as_str()
+                .unwrap_or("Codex reported an error.")
+                .to_string(),
+        ),
         _ => Parsed::Ignore,
     }
 }
@@ -128,12 +144,18 @@ pub fn parse_codex_line(line: &str) -> Parsed {
 pub fn resolve_cli(name: &str, explicit: &str) -> Result<PathBuf, String> {
     if !explicit.trim().is_empty() {
         let p = PathBuf::from(explicit.trim());
-        return if p.exists() { Ok(p) } else { Err(format!("{} was not found at {}", name, p.display())) };
+        return if p.exists() {
+            Ok(p)
+        } else {
+            Err(format!("{} was not found at {}", name, p.display()))
+        };
     }
     if let Ok(p) = which::which(name) {
         return Ok(p);
     }
-    let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_default();
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_default();
     let appdata = std::env::var("APPDATA").unwrap_or_default();
     let candidates = [
         format!("{home}/.local/bin/{name}.exe"),
@@ -221,16 +243,33 @@ impl Engine {
     fn spawn_claude(&self, model: &str, path: &str, live: bool) -> Result<ClaudeProc, String> {
         let program = resolve_cli("claude", path)?;
         let workdir = self.workdir();
-        let prompt_file = self.data_dir.join(if live { "system-prompt-live.md" } else { "system-prompt.md" });
-        std::fs::write(&prompt_file, if live { LIVE_PROMPT } else { SYSTEM_PROMPT }).map_err(|e| e.to_string())?;
+        let prompt_file = self.data_dir.join(if live {
+            "system-prompt-live.md"
+        } else {
+            "system-prompt.md"
+        });
+        std::fs::write(&prompt_file, if live { LIVE_PROMPT } else { SYSTEM_PROMPT })
+            .map_err(|e| e.to_string())?;
 
         let mut cmd = command(&program);
         cmd.current_dir(&workdir)
-            .args(["-p", "--input-format", "stream-json", "--output-format", "stream-json"])
+            .args([
+                "-p",
+                "--input-format",
+                "stream-json",
+                "--output-format",
+                "stream-json",
+            ])
             .args(["--verbose", "--include-partial-messages"])
             // Chat only: no file, shell or web tools, no MCP servers, and
             // nothing written to the user's Claude Code session history.
-            .args(["--tools", "", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"])
+            .args([
+                "--tools",
+                "",
+                "--strict-mcp-config",
+                "--disable-slash-commands",
+                "--no-session-persistence",
+            ])
             .arg("--system-prompt-file")
             .arg(&prompt_file)
             .stdin(Stdio::piped())
@@ -239,7 +278,9 @@ impl Engine {
         if !model.trim().is_empty() {
             cmd.args(["--model", model.trim()]);
         }
-        let mut child = cmd.spawn().map_err(|e| format!("Could not start {}: {e}", program.display()))?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("Could not start {}: {e}", program.display()))?;
         let stdin = child.stdin.take().ok_or("no stdin")?;
         let stdout = child.stdout.take().ok_or("no stdout")?;
         let mut stderr = child.stderr.take().ok_or("no stderr")?;
@@ -255,19 +296,36 @@ impl Engine {
         });
 
         let alive = Arc::new(AtomicBool::new(true));
-        let (alive_r, emit, turn, busy) = (alive.clone(), self.emit.clone(), self.turn.clone(), self.busy.clone());
+        let (alive_r, emit, turn, busy) = (
+            alive.clone(),
+            self.emit.clone(),
+            self.turn.clone(),
+            self.busy.clone(),
+        );
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 let turn_id = turn.load(Ordering::SeqCst);
                 match parse_claude_line(&line) {
-                    Parsed::Delta(text) => emit(AiEvent { turn: turn_id, kind: "delta", text }),
+                    Parsed::Delta(text) => emit(AiEvent {
+                        turn: turn_id,
+                        kind: "delta",
+                        text,
+                    }),
                     Parsed::Done => {
                         busy.store(false, Ordering::SeqCst);
-                        emit(AiEvent { turn: turn_id, kind: "done", text: String::new() });
+                        emit(AiEvent {
+                            turn: turn_id,
+                            kind: "done",
+                            text: String::new(),
+                        });
                     }
                     Parsed::Error(text) => {
                         busy.store(false, Ordering::SeqCst);
-                        emit(AiEvent { turn: turn_id, kind: "error", text: explain(&text) });
+                        emit(AiEvent {
+                            turn: turn_id,
+                            kind: "error",
+                            text: explain(&text),
+                        });
                     }
                     _ => {}
                 }
@@ -277,18 +335,43 @@ impl Engine {
             let was_alive = alive_r.swap(false, Ordering::SeqCst);
             if was_alive && busy.swap(false, Ordering::SeqCst) {
                 std::thread::sleep(std::time::Duration::from_millis(150));
-                let detail = errors.lock().map(|e| e.trim().to_string()).unwrap_or_default();
-                let text = if detail.is_empty() { "The Claude CLI closed unexpectedly.".to_string() } else { explain(&detail) };
-                emit(AiEvent { turn: turn.load(Ordering::SeqCst), kind: "error", text });
+                let detail = errors
+                    .lock()
+                    .map(|e| e.trim().to_string())
+                    .unwrap_or_default();
+                let text = if detail.is_empty() {
+                    "The Claude CLI closed unexpectedly.".to_string()
+                } else {
+                    explain(&detail)
+                };
+                emit(AiEvent {
+                    turn: turn.load(Ordering::SeqCst),
+                    kind: "error",
+                    text,
+                });
             }
         });
 
-        Ok(ClaudeProc { child, stdin, alive, key: format!("{model}|{path}|{live}") })
+        Ok(ClaudeProc {
+            child,
+            stdin,
+            alive,
+            key: format!("{model}|{path}|{live}"),
+        })
     }
 
-    fn ensure_claude<'a>(&self, state: &'a mut State, model: &str, path: &str, live: bool) -> Result<&'a mut ClaudeProc, String> {
+    fn ensure_claude<'a>(
+        &self,
+        state: &'a mut State,
+        model: &str,
+        path: &str,
+        live: bool,
+    ) -> Result<&'a mut ClaudeProc, String> {
         let key = format!("{model}|{path}|{live}");
-        let usable = state.claude.as_ref().is_some_and(|c| c.alive.load(Ordering::SeqCst) && c.key == key);
+        let usable = state
+            .claude
+            .as_ref()
+            .is_some_and(|c| c.alive.load(Ordering::SeqCst) && c.key == key);
         if !usable {
             kill_claude(state);
             state.claude = Some(self.spawn_claude(model, path, live)?);
@@ -312,7 +395,11 @@ impl Engine {
         let mut state = self.state.lock().map_err(|_| "engine lock poisoned")?;
         state.last_used = Some(Instant::now());
         self.busy.store(true, Ordering::SeqCst);
-        let result = if ask.provider == "codex" { self.ask_codex(&mut state, &ask, turn) } else { self.ask_claude(&mut state, &ask) };
+        let result = if ask.provider == "codex" {
+            self.ask_codex(&mut state, &ask, turn)
+        } else {
+            self.ask_claude(&mut state, &ask)
+        };
         if result.is_err() {
             self.busy.store(false, Ordering::SeqCst);
         }
@@ -327,16 +414,24 @@ impl Engine {
                 "source": { "type": "base64", "media_type": "image/jpeg", "data": base64::engine::general_purpose::STANDARD.encode(jpeg) }
             }));
         }
-        let line = format!("{}\n", json!({ "type": "user", "message": { "role": "user", "content": content } }));
+        let line = format!(
+            "{}\n",
+            json!({ "type": "user", "message": { "role": "user", "content": content } })
+        );
 
         // If the kept-alive process died in the meantime, start a new one
         // and send again.
         for attempt in 0..2 {
             let proc = self.ensure_claude(state, &ask.claude_model, &ask.claude_path, ask.live)?;
-            let sent = proc.stdin.write_all(line.as_bytes()).and_then(|_| proc.stdin.flush());
+            let sent = proc
+                .stdin
+                .write_all(line.as_bytes())
+                .and_then(|_| proc.stdin.flush());
             match sent {
                 Ok(()) => return Ok(()),
-                Err(e) if attempt == 1 => return Err(format!("Could not reach the Claude CLI: {e}")),
+                Err(e) if attempt == 1 => {
+                    return Err(format!("Could not reach the Claude CLI: {e}"))
+                }
                 Err(_) => kill_claude(state),
             }
         }
@@ -364,7 +459,12 @@ impl Engine {
             }
             None => format!("{instructions}\n\n---\n\n{}", ask.prompt),
         };
-        cmd.args(["--json", "--skip-git-repo-check", "-c", "sandbox_mode=read-only"]);
+        cmd.args([
+            "--json",
+            "--skip-git-repo-check",
+            "-c",
+            "sandbox_mode=read-only",
+        ]);
         if !ask.codex_model.trim().is_empty() {
             cmd.args(["-m", ask.codex_model.trim()]);
         }
@@ -373,9 +473,14 @@ impl Engine {
             std::fs::write(&shot, jpeg).map_err(|e| e.to_string())?;
             cmd.arg("-i").arg(&shot);
         }
-        cmd.arg("-").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        cmd.arg("-")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
-        let mut child = cmd.spawn().map_err(|e| format!("Could not start {}: {e}", program.display()))?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("Could not start {}: {e}", program.display()))?;
         if let Some(mut stdin) = child.stdin.take() {
             let _ = stdin.write_all(prompt.as_bytes());
         }
@@ -393,28 +498,52 @@ impl Engine {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 match parse_codex_line(&line) {
                     Parsed::Thread(id) => *thread_slot_w.lock().unwrap() = Some(id),
-                    Parsed::Delta(text) => emit(AiEvent { turn, kind: "delta", text }),
+                    Parsed::Delta(text) => emit(AiEvent {
+                        turn,
+                        kind: "delta",
+                        text,
+                    }),
                     Parsed::Done => {
                         finished = true;
-                        emit(AiEvent { turn, kind: "done", text: String::new() });
+                        emit(AiEvent {
+                            turn,
+                            kind: "done",
+                            text: String::new(),
+                        });
                     }
                     Parsed::Error(text) => {
                         finished = true;
-                        emit(AiEvent { turn, kind: "error", text: explain(&text) });
+                        emit(AiEvent {
+                            turn,
+                            kind: "error",
+                            text: explain(&text),
+                        });
                     }
                     Parsed::Ignore => {}
                 }
             }
             let mut detail = String::new();
             let _ = stderr.read_to_string(&mut detail);
-            let ok = child.lock().ok().and_then(|mut c| c.wait().ok()).is_some_and(|s| s.success());
+            let ok = child
+                .lock()
+                .ok()
+                .and_then(|mut c| c.wait().ok())
+                .is_some_and(|s| s.success());
             // Only report and record if this is still the current question
             // (the user may have pressed Stop or started a new chat).
             if current.load(Ordering::SeqCst) == turn {
                 busy.store(false, Ordering::SeqCst);
                 if !finished {
-                    let text = if ok { "Codex returned no answer.".to_string() } else { explain(detail.trim()) };
-                    emit(AiEvent { turn, kind: "error", text });
+                    let text = if ok {
+                        "Codex returned no answer.".to_string()
+                    } else {
+                        explain(detail.trim())
+                    };
+                    emit(AiEvent {
+                        turn,
+                        kind: "error",
+                        text,
+                    });
                 }
                 if let Some(id) = thread_slot.lock().unwrap().take() {
                     if let Ok(mut s) = engine_state.lock() {
@@ -459,7 +588,9 @@ impl Engine {
             return;
         }
         if let Ok(mut state) = self.state.lock() {
-            let idle = state.last_used.is_some_and(|t| t.elapsed().as_secs() >= u64::from(keep_warm_minutes) * 60);
+            let idle = state
+                .last_used
+                .is_some_and(|t| t.elapsed().as_secs() >= u64::from(keep_warm_minutes) * 60);
             if idle && state.claude.is_some() {
                 kill_claude(&mut state);
             }
@@ -478,7 +609,12 @@ fn kill_claude(state: &mut State) {
 /// Turn the CLIs' most common failures into something a person can act on.
 fn explain(raw: &str) -> String {
     let lower = raw.to_lowercase();
-    if lower.contains("/login") || lower.contains("not logged in") || lower.contains("invalid api key") || lower.contains("unauthorized") || lower.contains("401") {
+    if lower.contains("/login")
+        || lower.contains("not logged in")
+        || lower.contains("invalid api key")
+        || lower.contains("unauthorized")
+        || lower.contains("401")
+    {
         return format!("You are not signed in. Open a terminal, run the CLI once (`claude` or `codex`) and sign in with your subscription, then ask again.\n\nDetails: {raw}");
     }
     if lower.contains("rate limit") || lower.contains("usage limit") || lower.contains("429") {
@@ -511,25 +647,47 @@ mod tests {
         let ok = r#"{"type":"result","subtype":"success","is_error":false,"result":"4821"}"#;
         let bad = r#"{"type":"result","subtype":"success","is_error":true,"result":"Invalid API key · Please run /login"}"#;
         assert_eq!(parse_claude_line(ok), Parsed::Ignore);
-        assert_eq!(parse_claude_line(bad), Parsed::Error("Invalid API key · Please run /login".into()));
+        assert_eq!(
+            parse_claude_line(bad),
+            Parsed::Error("Invalid API key · Please run /login".into())
+        );
     }
 
     #[test]
     fn claude_noise_is_ignored() {
         assert_eq!(parse_claude_line("not json"), Parsed::Ignore);
-        assert_eq!(parse_claude_line(r#"{"type":"system","subtype":"init"}"#), Parsed::Ignore);
+        assert_eq!(
+            parse_claude_line(r#"{"type":"system","subtype":"init"}"#),
+            Parsed::Ignore
+        );
     }
 
     #[test]
     fn codex_events() {
-        assert_eq!(parse_codex_line(r#"{"type":"thread.started","thread_id":"abc"}"#), Parsed::Thread("abc".into()));
         assert_eq!(
-            parse_codex_line(r#"{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"Hello"}}"#),
+            parse_codex_line(r#"{"type":"thread.started","thread_id":"abc"}"#),
+            Parsed::Thread("abc".into())
+        );
+        assert_eq!(
+            parse_codex_line(
+                r#"{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"Hello"}}"#
+            ),
             Parsed::Delta("Hello\n\n".into())
         );
-        assert_eq!(parse_codex_line(r#"{"type":"item.completed","item":{"type":"reasoning","text":"hmm"}}"#), Parsed::Ignore);
-        assert_eq!(parse_codex_line(r#"{"type":"turn.completed","usage":{}}"#), Parsed::Done);
-        assert_eq!(parse_codex_line(r#"{"type":"turn.failed","error":{"message":"boom"}}"#), Parsed::Error("boom".into()));
+        assert_eq!(
+            parse_codex_line(
+                r#"{"type":"item.completed","item":{"type":"reasoning","text":"hmm"}}"#
+            ),
+            Parsed::Ignore
+        );
+        assert_eq!(
+            parse_codex_line(r#"{"type":"turn.completed","usage":{}}"#),
+            Parsed::Done
+        );
+        assert_eq!(
+            parse_codex_line(r#"{"type":"turn.failed","error":{"message":"boom"}}"#),
+            Parsed::Error("boom".into())
+        );
     }
 
     #[test]
@@ -548,7 +706,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let (tx, rx) = mpsc::channel();
         let tx = Mutex::new(tx);
-        let engine = Engine::new(dir.clone(), Arc::new(move |e| tx.lock().unwrap().send(e).unwrap()));
+        let engine = Engine::new(
+            dir.clone(),
+            Arc::new(move |e| tx.lock().unwrap().send(e).unwrap()),
+        );
         let ask = |prompt: &str, jpeg: Option<Vec<u8>>| Ask {
             prompt: prompt.into(),
             jpeg,
@@ -562,7 +723,9 @@ mod tests {
         let collect = |turn: u64| {
             let mut text = String::new();
             loop {
-                let e: AiEvent = rx.recv_timeout(std::time::Duration::from_secs(90)).expect("timed out");
+                let e: AiEvent = rx
+                    .recv_timeout(std::time::Duration::from_secs(90))
+                    .expect("timed out");
                 assert_eq!(e.turn, turn);
                 match e.kind {
                     "delta" => text.push_str(&e.text),
@@ -578,7 +741,14 @@ mod tests {
         for px in rgba.chunks_exact_mut(4).take(64 * 20) {
             px[..3].copy_from_slice(&[200, 30, 30]);
         }
-        let jpeg = crate::platform::to_jpeg(crate::platform::RawImage { width: 64, height: 64, rgba }, 64);
+        let jpeg = crate::platform::to_jpeg(
+            crate::platform::RawImage {
+                width: 64,
+                height: 64,
+                rgba,
+            },
+            64,
+        );
 
         let started = Instant::now();
         let t1 = engine.ask(ask("The secret word is 'marmalade'. What colour is the top band of the image? One word.", jpeg)).unwrap();
@@ -587,7 +757,9 @@ mod tests {
         assert!(first.to_lowercase().contains("red"), "{first}");
 
         let started = Instant::now();
-        let t2 = engine.ask(ask("What was the secret word? One word.", None)).unwrap();
+        let t2 = engine
+            .ask(ask("What was the secret word? One word.", None))
+            .unwrap();
         let second = collect(t2);
         eprintln!("follow-up after {:?}: {second}", started.elapsed());
         assert!(second.to_lowercase().contains("marmalade"), "{second}");
@@ -607,7 +779,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let (tx, rx) = mpsc::channel();
         let tx = Mutex::new(tx);
-        let engine = Engine::new(dir.clone(), Arc::new(move |e| tx.lock().unwrap().send(e).unwrap()));
+        let engine = Engine::new(
+            dir.clone(),
+            Arc::new(move |e| tx.lock().unwrap().send(e).unwrap()),
+        );
         let say = |text: &str| {
             let turn = engine
                 .ask(Ask {
@@ -624,7 +799,9 @@ mod tests {
             let started = Instant::now();
             let mut out = String::new();
             loop {
-                let e: AiEvent = rx.recv_timeout(std::time::Duration::from_secs(90)).expect("timed out");
+                let e: AiEvent = rx
+                    .recv_timeout(std::time::Duration::from_secs(90))
+                    .expect("timed out");
                 assert_eq!(e.turn, turn);
                 match e.kind {
                     "delta" => out.push_str(&e.text),
@@ -640,16 +817,21 @@ mod tests {
             out
         };
 
-        let small_talk = say("Them: Morning everyone, how was the weekend?\nMe: Good thanks, we went hiking.");
+        let small_talk =
+            say("Them: Morning everyone, how was the weekend?\nMe: Good thanks, we went hiking.");
         assert_eq!(small_talk.trim(), ".", "small talk should get no help");
 
         let context = say("Them: So for the Orion project we agreed the backend stays in Java, right?\nMe: Yes, Java.");
         assert!(context.trim() == "." || context.len() < 200, "{context}");
 
-        let question = say("Them: Can you sketch how you'd do a breadth-first search over our service graph?");
+        let question =
+            say("Them: Can you sketch how you'd do a breadth-first search over our service graph?");
         let lower = question.to_lowercase();
         assert!(lower.contains("queue"), "{question}");
-        assert!(lower.contains("java"), "should use the language agreed earlier: {question}");
+        assert!(
+            lower.contains("java"),
+            "should use the language agreed earlier: {question}"
+        );
 
         engine.new_chat();
         let _ = std::fs::remove_dir_all(dir);

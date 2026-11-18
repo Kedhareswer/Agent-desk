@@ -66,7 +66,15 @@ pub struct Detector {
 
 impl Detector {
     pub const fn new(mode: Mode) -> Self {
-        Self { mode, ctrl: false, alt: false, dirty: false, armed: false, press_start: 0, last_tap: None }
+        Self {
+            mode,
+            ctrl: false,
+            alt: false,
+            dirty: false,
+            armed: false,
+            press_start: 0,
+            last_tap: None,
+        }
     }
 
     /// Feed one key event.
@@ -93,7 +101,11 @@ impl Detector {
                     let was_armed = self.armed;
                     self.dirty = self.ctrl || self.alt;
                     self.armed = false;
-                    return if was_armed { Gesture::Cancel } else { Gesture::None };
+                    return if was_armed {
+                        Gesture::Cancel
+                    } else {
+                        Gesture::None
+                    };
                 }
             }
             if self.ctrl && self.alt && !self.dirty && !self.armed {
@@ -258,18 +270,40 @@ mod tests {
 
     fn run(mode: Mode, events: &[(Key, bool, u64)]) -> Vec<Gesture> {
         let mut d = Detector::new(mode);
-        events.iter().map(|(k, down, t)| d.on_key(*k, *down, *t)).filter(|g| *g != None).collect()
+        events
+            .iter()
+            .map(|(k, down, t)| d.on_key(*k, *down, *t))
+            .filter(|g| *g != None)
+            .collect()
     }
 
     #[test]
     fn holding_ctrl_alt_reports_down_then_up_with_duration() {
-        let g = run(Mode::CtrlAlt, &[(Key::Ctrl, true, 0), (Key::Alt, true, 10), (Key::Alt, false, 2510), (Key::Ctrl, false, 2520)]);
+        let g = run(
+            Mode::CtrlAlt,
+            &[
+                (Key::Ctrl, true, 0),
+                (Key::Alt, true, 10),
+                (Key::Alt, false, 2510),
+                (Key::Ctrl, false, 2520),
+            ],
+        );
         assert_eq!(g, vec![Down, Up(2500)]);
     }
 
     #[test]
     fn key_repeat_while_holding_does_not_restart() {
-        let g = run(Mode::CtrlAlt, &[(Key::Ctrl, true, 0), (Key::Alt, true, 10), (Key::Alt, true, 500), (Key::Ctrl, true, 530), (Key::Ctrl, false, 900), (Key::Alt, false, 910)]);
+        let g = run(
+            Mode::CtrlAlt,
+            &[
+                (Key::Ctrl, true, 0),
+                (Key::Alt, true, 10),
+                (Key::Alt, true, 500),
+                (Key::Ctrl, true, 530),
+                (Key::Ctrl, false, 900),
+                (Key::Alt, false, 910),
+            ],
+        );
         assert_eq!(g, vec![Down, Up(890)]);
     }
 
@@ -278,7 +312,14 @@ mod tests {
         // Ctrl+Alt+T, Ctrl+Alt+Delete and friends are ordinary shortcuts.
         let g = run(
             Mode::CtrlAlt,
-            &[(Key::Ctrl, true, 0), (Key::Alt, true, 5), (Key::Other, true, 20), (Key::Other, false, 40), (Key::Alt, false, 60), (Key::Ctrl, false, 70)],
+            &[
+                (Key::Ctrl, true, 0),
+                (Key::Alt, true, 5),
+                (Key::Other, true, 20),
+                (Key::Other, false, 40),
+                (Key::Alt, false, 60),
+                (Key::Ctrl, false, 70),
+            ],
         );
         assert_eq!(g, vec![Down, Cancel]);
     }
@@ -286,16 +327,42 @@ mod tests {
     #[test]
     fn altgr_does_nothing() {
         // AltGr arrives as Left Ctrl + Right Alt; Right Alt maps to Other.
-        let g = run(Mode::CtrlAlt, &[(Key::Ctrl, true, 0), (Key::Other, true, 0), (Key::Other, false, 50), (Key::Ctrl, false, 50)]);
+        let g = run(
+            Mode::CtrlAlt,
+            &[
+                (Key::Ctrl, true, 0),
+                (Key::Other, true, 0),
+                (Key::Other, false, 50),
+                (Key::Ctrl, false, 50),
+            ],
+        );
         assert!(g.is_empty());
     }
 
     #[test]
     fn ctrl_alone_and_typing_do_nothing() {
-        assert!(run(Mode::CtrlAlt, &[(Key::Ctrl, true, 0), (Key::Ctrl, false, 50)]).is_empty());
-        assert!(run(Mode::CtrlAlt, &[(Key::Other, true, 0), (Key::Other, false, 50)]).is_empty());
+        assert!(run(
+            Mode::CtrlAlt,
+            &[(Key::Ctrl, true, 0), (Key::Ctrl, false, 50)]
+        )
+        .is_empty());
+        assert!(run(
+            Mode::CtrlAlt,
+            &[(Key::Other, true, 0), (Key::Other, false, 50)]
+        )
+        .is_empty());
         // Ctrl+C then adding Alt later is still not a clean chord.
-        let g = run(Mode::CtrlAlt, &[(Key::Ctrl, true, 0), (Key::Other, true, 10), (Key::Other, false, 20), (Key::Alt, true, 30), (Key::Alt, false, 40), (Key::Ctrl, false, 50)]);
+        let g = run(
+            Mode::CtrlAlt,
+            &[
+                (Key::Ctrl, true, 0),
+                (Key::Other, true, 10),
+                (Key::Other, false, 20),
+                (Key::Alt, true, 30),
+                (Key::Alt, false, 40),
+                (Key::Ctrl, false, 50),
+            ],
+        );
         assert!(g.is_empty());
     }
 
@@ -304,9 +371,16 @@ mod tests {
         let g = run(
             Mode::CtrlAlt,
             &[
-                (Key::Ctrl, true, 0), (Key::Alt, true, 5), (Key::Other, true, 20), (Key::Other, false, 30),
-                (Key::Alt, false, 40), (Key::Ctrl, false, 50),
-                (Key::Ctrl, true, 500), (Key::Alt, true, 510), (Key::Ctrl, false, 560), (Key::Alt, false, 570),
+                (Key::Ctrl, true, 0),
+                (Key::Alt, true, 5),
+                (Key::Other, true, 20),
+                (Key::Other, false, 30),
+                (Key::Alt, false, 40),
+                (Key::Ctrl, false, 50),
+                (Key::Ctrl, true, 500),
+                (Key::Alt, true, 510),
+                (Key::Ctrl, false, 560),
+                (Key::Alt, false, 570),
             ],
         );
         assert_eq!(g, vec![Down, Cancel, Down, Up(50)]);
@@ -314,26 +388,60 @@ mod tests {
 
     #[test]
     fn double_ctrl_fires_on_second_quick_tap() {
-        let g = run(Mode::DoubleCtrl, &[(Key::Ctrl, true, 0), (Key::Ctrl, false, 60), (Key::Ctrl, true, 200), (Key::Ctrl, false, 260)]);
+        let g = run(
+            Mode::DoubleCtrl,
+            &[
+                (Key::Ctrl, true, 0),
+                (Key::Ctrl, false, 60),
+                (Key::Ctrl, true, 200),
+                (Key::Ctrl, false, 260),
+            ],
+        );
         assert_eq!(g, vec![Tap]);
     }
 
     #[test]
     fn slow_or_interrupted_taps_do_not_fire() {
-        let slow = run(Mode::DoubleCtrl, &[(Key::Ctrl, true, 0), (Key::Ctrl, false, 60), (Key::Ctrl, true, 900), (Key::Ctrl, false, 960)]);
+        let slow = run(
+            Mode::DoubleCtrl,
+            &[
+                (Key::Ctrl, true, 0),
+                (Key::Ctrl, false, 60),
+                (Key::Ctrl, true, 900),
+                (Key::Ctrl, false, 960),
+            ],
+        );
         assert!(slow.is_empty());
         // Ctrl+C then Ctrl+V is two Ctrl presses, but not a double tap.
         let copy_paste = run(
             Mode::DoubleCtrl,
-            &[(Key::Ctrl, true, 0), (Key::Other, true, 20), (Key::Other, false, 40), (Key::Ctrl, false, 60),
-              (Key::Ctrl, true, 150), (Key::Other, true, 170), (Key::Other, false, 190), (Key::Ctrl, false, 210)],
+            &[
+                (Key::Ctrl, true, 0),
+                (Key::Other, true, 20),
+                (Key::Other, false, 40),
+                (Key::Ctrl, false, 60),
+                (Key::Ctrl, true, 150),
+                (Key::Other, true, 170),
+                (Key::Other, false, 190),
+                (Key::Ctrl, false, 210),
+            ],
         );
         assert!(copy_paste.is_empty());
     }
 
     #[test]
     fn key_repeat_while_holding_ctrl_is_not_a_tap() {
-        let g = run(Mode::DoubleCtrl, &[(Key::Ctrl, true, 0), (Key::Ctrl, true, 250), (Key::Ctrl, true, 500), (Key::Ctrl, false, 520), (Key::Ctrl, true, 600), (Key::Ctrl, false, 650)]);
+        let g = run(
+            Mode::DoubleCtrl,
+            &[
+                (Key::Ctrl, true, 0),
+                (Key::Ctrl, true, 250),
+                (Key::Ctrl, true, 500),
+                (Key::Ctrl, false, 520),
+                (Key::Ctrl, true, 600),
+                (Key::Ctrl, false, 650),
+            ],
+        );
         assert!(g.is_empty());
     }
 }

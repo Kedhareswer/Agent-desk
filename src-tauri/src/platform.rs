@@ -36,12 +36,12 @@ mod imp {
         PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION,
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
-        KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT, VK_V,
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
+        VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT, VK_V,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        BringWindowToTop, GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId,
-        IsWindow, SetForegroundWindow,
+        BringWindowToTop, GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId, IsWindow,
+        SetForegroundWindow,
     };
 
     fn hwnd(raw: isize) -> HWND {
@@ -77,7 +77,11 @@ mod imp {
                 }
                 let _ = CloseHandle(handle);
             }
-            Foreground { hwnd: h.0 as isize, title, process }
+            Foreground {
+                hwnd: h.0 as isize,
+                title,
+                process,
+            }
         }
     }
 
@@ -85,7 +89,10 @@ mod imp {
     pub fn capture_monitor(window: isize) -> Option<RawImage> {
         unsafe {
             let monitor = MonitorFromWindow(hwnd(window), MONITOR_DEFAULTTOPRIMARY);
-            let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+            let mut info = MONITORINFO {
+                cbSize: size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
             if !GetMonitorInfoW(monitor, &mut info).as_bool() {
                 return None;
             }
@@ -99,7 +106,18 @@ mod imp {
             let mem = CreateCompatibleDC(Some(screen));
             let bitmap = CreateCompatibleBitmap(screen, w, h);
             let old = SelectObject(mem, bitmap.into());
-            let copied = BitBlt(mem, 0, 0, w, h, Some(screen), r.left, r.top, SRCCOPY | CAPTUREBLT).is_ok();
+            let copied = BitBlt(
+                mem,
+                0,
+                0,
+                w,
+                h,
+                Some(screen),
+                r.left,
+                r.top,
+                SRCCOPY | CAPTUREBLT,
+            )
+            .is_ok();
 
             let mut bmi = BITMAPINFO {
                 bmiHeader: BITMAPINFOHEADER {
@@ -115,7 +133,15 @@ mod imp {
             };
             let mut pixels = vec![0u8; (w as usize) * (h as usize) * 4];
             let rows = if copied {
-                GetDIBits(mem, bitmap, 0, h as u32, Some(pixels.as_mut_ptr() as *mut c_void), &mut bmi, DIB_RGB_COLORS)
+                GetDIBits(
+                    mem,
+                    bitmap,
+                    0,
+                    h as u32,
+                    Some(pixels.as_mut_ptr() as *mut c_void),
+                    &mut bmi,
+                    DIB_RGB_COLORS,
+                )
             } else {
                 0
             };
@@ -133,7 +159,11 @@ mod imp {
                 px.swap(0, 2);
                 px[3] = 255;
             }
-            Some(RawImage { width: w as u32, height: h as u32, rgba: pixels })
+            Some(RawImage {
+                width: w as u32,
+                height: h as u32,
+                rgba: pixels,
+            })
         }
     }
 
@@ -164,7 +194,11 @@ mod imp {
             Anonymous: INPUT_0 {
                 ki: KEYBDINPUT {
                     wVk: vk,
-                    dwFlags: if up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) },
+                    dwFlags: if up {
+                        KEYEVENTF_KEYUP
+                    } else {
+                        KEYBD_EVENT_FLAGS(0)
+                    },
                     ..Default::default()
                 },
             },
@@ -218,11 +252,16 @@ pub fn to_jpeg(img: RawImage, max_edge: u32) -> Option<Vec<u8>> {
     let long = img.width.max(img.height);
     if long > max_edge {
         let scale = max_edge as f32 / long as f32;
-        let (w, h) = ((img.width as f32 * scale) as u32, (img.height as f32 * scale) as u32);
+        let (w, h) = (
+            (img.width as f32 * scale) as u32,
+            (img.height as f32 * scale) as u32,
+        );
         rgb = image::imageops::resize(&rgb, w.max(1), h.max(1), FilterType::Triangle);
     }
     let mut out = Vec::new();
-    JpegEncoder::new_with_quality(&mut out, 80).encode_image(&rgb).ok()?;
+    JpegEncoder::new_with_quality(&mut out, 80)
+        .encode_image(&rgb)
+        .ok()?;
     Some(out)
 }
 
@@ -232,7 +271,11 @@ mod tests {
 
     #[test]
     fn jpeg_is_downscaled() {
-        let img = RawImage { width: 400, height: 200, rgba: vec![128; 400 * 200 * 4] };
+        let img = RawImage {
+            width: 400,
+            height: 200,
+            rgba: vec![128; 400 * 200 * 4],
+        };
         let bytes = to_jpeg(img, 100).unwrap();
         let decoded = image::load_from_memory(&bytes).unwrap();
         assert_eq!((decoded.width(), decoded.height()), (100, 50));

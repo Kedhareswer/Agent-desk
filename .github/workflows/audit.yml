@@ -1,0 +1,35 @@
+name: Security audit
+
+# Checks dependencies against the RustSec and npm advisory databases weekly
+# and whenever a lockfile changes.
+
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  push:
+    paths:
+      - src-tauri/Cargo.lock
+      - package-lock.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - run: cargo audit --file src-tauri/Cargo.lock
+
+  npm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - run: npm audit --audit-level=high

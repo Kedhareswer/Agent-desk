@@ -25,7 +25,8 @@ use std::{
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, State, WebviewWindow, WindowEvent,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, State, WebviewWindow,
+    WindowEvent,
 };
 use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt as _, Shortcut, ShortcutState};
@@ -146,7 +147,14 @@ fn own_hwnd(_win: &WebviewWindow) -> isize {
 }
 
 fn phase(app: &AppHandle, phase: &'static str, text: impl Into<String>) {
-    let _ = app.emit_to("main", "phase", Phase { phase, text: text.into() });
+    let _ = app.emit_to(
+        "main",
+        "phase",
+        Phase {
+            phase,
+            text: text.into(),
+        },
+    );
 }
 
 /* ---------- placing the overlay ---------- */
@@ -163,8 +171,18 @@ fn screen_under_cursor(app: &AppHandle, win: &WebviewWindow) -> Option<Screen> {
 fn to_screen(m: &tauri::Monitor) -> Screen {
     let area = m.work_area();
     Screen {
-        work: Rect { x: area.position.x, y: area.position.y, w: area.size.width as i32, h: area.size.height as i32 },
-        full: Rect { x: m.position().x, y: m.position().y, w: m.size().width as i32, h: m.size().height as i32 },
+        work: Rect {
+            x: area.position.x,
+            y: area.position.y,
+            w: area.size.width as i32,
+            h: area.size.height as i32,
+        },
+        full: Rect {
+            x: m.position().x,
+            y: m.position().y,
+            w: m.size().width as i32,
+            h: m.size().height as i32,
+        },
         scale: m.scale_factor(),
     }
 }
@@ -173,13 +191,18 @@ fn to_screen(m: &tauri::Monitor) -> Screen {
 fn place_overlay(app: &AppHandle) {
     let Some(win) = overlay(app) else { return };
     let state = app.state::<App>();
-    let Some(screen) = *state.screen.lock().unwrap() else { return };
+    let Some(screen) = *state.screen.lock().unwrap() else {
+        return;
+    };
     let (w, h) = *state.size.lock().unwrap();
     let (edge, along) = {
         let s = state.settings.lock().unwrap();
         (s.dock_edge, s.dock_along)
     };
-    let size = ((w * screen.scale).round() as i32, (h * screen.scale).round() as i32);
+    let size = (
+        (w * screen.scale).round() as i32,
+        (h * screen.scale).round() as i32,
+    );
     let grip = (NOTCH_HEIGHT * screen.scale) as i32;
     let (x, y) = dock::place(edge, along, size, screen.work, grip);
     *state.placed.lock().unwrap() = (x, y);
@@ -191,12 +214,24 @@ fn place_overlay(app: &AppHandle) {
 fn finish_drag(app: &AppHandle) {
     let Some(win) = overlay(app) else { return };
     let state = app.state::<App>();
-    let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) else { return };
-    let screen = win.current_monitor().ok().flatten().map(|m| to_screen(&m)).or(*state.screen.lock().unwrap());
+    let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) else {
+        return;
+    };
+    let screen = win
+        .current_monitor()
+        .ok()
+        .flatten()
+        .map(|m| to_screen(&m))
+        .or(*state.screen.lock().unwrap());
     let Some(screen) = screen else { return };
     *state.screen.lock().unwrap() = Some(screen);
     let grip = (NOTCH_HEIGHT * screen.scale) as i32;
-    let dropped = Rect { x: pos.x, y: pos.y, w: size.width as i32, h: size.height as i32 };
+    let dropped = Rect {
+        x: pos.x,
+        y: pos.y,
+        w: size.width as i32,
+        h: size.height as i32,
+    };
     let (edge, along) = dock::snap(dropped, screen.work, grip);
     let updated = {
         let mut s = state.settings.lock().unwrap();
@@ -236,8 +271,17 @@ fn capture_context(app: &AppHandle) -> Option<WakeInfo> {
     if let Some(screen) = screen_under_cursor(app, &win) {
         *state.screen.lock().unwrap() = Some(screen);
     }
-    let shot = if include_screen { platform::capture_monitor(foreground.hwnd) } else { None };
-    let info = WakeInfo { title: foreground.title.clone(), process: foreground.process.clone(), has_screen: shot.is_some(), typing: false };
+    let shot = if include_screen {
+        platform::capture_monitor(foreground.hwnd)
+    } else {
+        None
+    };
+    let info = WakeInfo {
+        title: foreground.title.clone(),
+        process: foreground.process.clone(),
+        has_screen: shot.is_some(),
+        typing: false,
+    };
     *state.snapshot.lock().unwrap() = Snapshot { foreground, shot };
     Some(info)
 }
@@ -280,7 +324,9 @@ fn show_overlay(app: &AppHandle, typing: bool, info: Option<WakeInfo>) {
         let state = app2.state::<App>();
         let live = is_live(&app2);
         let s = state.settings.lock().unwrap().clone();
-        state.engine.prewarm(&s.provider, &s.claude_model, &s.claude_path, live);
+        state
+            .engine
+            .prewarm(&s.provider, &s.claude_model, &s.claude_path, live);
     });
 }
 
@@ -299,7 +345,9 @@ fn toggle_overlay(app: &AppHandle) {
 
 /// The soft light around the screen edge while listening.
 fn glow(app: &AppHandle, on: bool) {
-    let Some(win) = app.get_webview_window("glow") else { return };
+    let Some(win) = app.get_webview_window("glow") else {
+        return;
+    };
     let state = app.state::<App>();
     if on {
         if !state.settings.lock().unwrap().edge_glow {
@@ -307,7 +355,10 @@ fn glow(app: &AppHandle, on: bool) {
         }
         if let Some(screen) = *state.screen.lock().unwrap() {
             let _ = win.set_position(PhysicalPosition::new(screen.full.x, screen.full.y));
-            let _ = win.set_size(PhysicalSize::new(screen.full.w as u32, screen.full.h as u32));
+            let _ = win.set_size(PhysicalSize::new(
+                screen.full.w as u32,
+                screen.full.h as u32,
+            ));
         }
         let _ = win.set_ignore_cursor_events(true);
         let _ = win.show();
@@ -330,9 +381,17 @@ fn send_question(app: &AppHandle, prompt: &str, with_screen: bool) -> Result<u64
         let mut snap = state.snapshot.lock().unwrap();
         // The screenshot is sent once; follow-up questions rely on the
         // conversation already containing it.
-        (snap.foreground.title.clone(), snap.foreground.process.clone(), snap.shot.take())
+        (
+            snap.foreground.title.clone(),
+            snap.foreground.process.clone(),
+            snap.shot.take(),
+        )
     };
-    let jpeg = if with_screen { shot.and_then(|img| platform::to_jpeg(img, SHOT_MAX_EDGE)) } else { None };
+    let jpeg = if with_screen {
+        shot.and_then(|img| platform::to_jpeg(img, SHOT_MAX_EDGE))
+    } else {
+        None
+    };
 
     let mut text = String::new();
     if !title.is_empty() || !process.is_empty() {
@@ -342,7 +401,11 @@ fn send_question(app: &AppHandle, prompt: &str, with_screen: bool) -> Result<u64
         text.push_str("[A screenshot of my screen is attached.]\n");
     }
     let request = prompt.trim();
-    text.push_str(if request.is_empty() { "Help me with what is on my screen." } else { request });
+    text.push_str(if request.is_empty() {
+        "Help me with what is on my screen."
+    } else {
+        request
+    });
 
     state.engine.ask(Ask {
         prompt: text,
@@ -363,11 +426,18 @@ fn prepare_speech(app: &AppHandle, announce: bool) -> Result<(), String> {
     let state = app.state::<App>();
     let model = state.settings.lock().unwrap().voice_model.clone();
     if !stt::model_ready(&state.dir, &model) {
-        let _one_at_a_time = state.model_download.lock().map_err(|_| "download lock poisoned")?;
+        let _one_at_a_time = state
+            .model_download
+            .lock()
+            .map_err(|_| "download lock poisoned")?;
         let app2 = app.clone();
         stt::ensure_model(&state.dir, &model, &move |pct| {
             if announce {
-                phase(&app2, "preparing", format!("Downloading speech model {pct}%"));
+                phase(
+                    &app2,
+                    "preparing",
+                    format!("Downloading speech model {pct}%"),
+                );
             }
         })?;
     }
@@ -394,7 +464,11 @@ fn talk_start(app: &AppHandle) {
             }
         });
         let shown = Arc::new(AtomicBool::new(false));
-        *slot = Some(Talk { id, recording, shown: shown.clone() });
+        *slot = Some(Talk {
+            id,
+            recording,
+            shown: shown.clone(),
+        });
         (id, shown)
     };
     let (id, shown) = id;
@@ -420,7 +494,9 @@ fn talk_start(app: &AppHandle) {
 /// The wake keys were released after `held_ms`.
 fn talk_end(app: &AppHandle, held_ms: u64) {
     let state = app.state::<App>();
-    let Some(talk) = state.talk.lock().unwrap().take() else { return };
+    let Some(talk) = state.talk.lock().unwrap().take() else {
+        return;
+    };
     if held_ms < TAP_MS {
         talk.recording.cancel();
         toggle_overlay(app);
@@ -437,10 +513,21 @@ fn talk_end(app: &AppHandle, held_ms: u64) {
         phase(app, "transcribing", "");
         let text = state.speech.transcribe(&samples)?;
         if text.is_empty() {
-            return Err("I couldn't make out any words. Try again a little closer to the microphone.".into());
+            return Err(
+                "I couldn't make out any words. Try again a little closer to the microphone."
+                    .into(),
+            );
         }
         let turn = send_question(app, &text, true)?;
-        let _ = app.emit_to("main", "asked", Asked { turn, text, quiet: false });
+        let _ = app.emit_to(
+            "main",
+            "asked",
+            Asked {
+                turn,
+                text,
+                quiet: false,
+            },
+        );
         Ok(turn)
     })();
     if let Err(message) = result {
@@ -536,7 +623,10 @@ fn live_start(app: &AppHandle) {
     }
 
     let stop = Arc::new(AtomicBool::new(false));
-    *state.live.lock().unwrap() = Some(LiveSession { stop: stop.clone(), _listeners: listeners });
+    *state.live.lock().unwrap() = Some(LiveSession {
+        stop: stop.clone(),
+        _listeners: listeners,
+    });
     set_live_item(app, true);
     show_overlay(app, false, info);
     let _ = app.emit_to("main", "live", true);
@@ -562,7 +652,14 @@ fn live_start(app: &AppHandle) {
                 // channel and is handled next time round.
                 if let Ok(text) = state.speech.transcribe(&samples) {
                     if text.split_whitespace().count() >= 2 {
-                        let _ = app.emit_to("main", "live-heard", Heard { who, text: text.clone() });
+                        let _ = app.emit_to(
+                            "main",
+                            "live-heard",
+                            Heard {
+                                who,
+                                text: text.clone(),
+                            },
+                        );
                         pending.push(format!("{who}: {text}"));
                     }
                 }
@@ -580,7 +677,15 @@ fn live_start(app: &AppHandle) {
                         last_shot = Some(Instant::now());
                     }
                     pending.clear();
-                    let _ = app.emit_to("main", "asked", Asked { turn, text: shown, quiet: true });
+                    let _ = app.emit_to(
+                        "main",
+                        "asked",
+                        Asked {
+                            turn,
+                            text: shown,
+                            quiet: true,
+                        },
+                    );
                 }
                 Err(e) => {
                     phase(&app, "error", e);
@@ -599,13 +704,17 @@ fn send_live(app: &AppHandle, lines: &[String], with_shot: bool) -> Result<u64, 
     let foreground = platform::foreground();
     let ours = overlay(app).map(|w| own_hwnd(&w)).unwrap_or(0);
     let jpeg = if with_shot && s.include_screen && (foreground.hwnd != ours || ours == 0) {
-        platform::capture_monitor(foreground.hwnd).and_then(|img| platform::to_jpeg(img, SHOT_MAX_EDGE))
+        platform::capture_monitor(foreground.hwnd)
+            .and_then(|img| platform::to_jpeg(img, SHOT_MAX_EDGE))
     } else {
         None
     };
     let mut text = String::new();
     if !foreground.title.is_empty() {
-        text.push_str(&format!("[Active window: {} ({})]\n", foreground.title, foreground.process));
+        text.push_str(&format!(
+            "[Active window: {} ({})]\n",
+            foreground.title, foreground.process
+        ));
     }
     if jpeg.is_some() {
         text.push_str("[A screenshot of my screen right now is attached.]\n");
@@ -645,7 +754,10 @@ fn apply_settings(app: &AppHandle, s: &Settings) -> Option<String> {
         match s.shortcut.trim().parse::<Shortcut>() {
             Ok(sc) => {
                 if let Err(e) = shortcuts.register(sc) {
-                    problem = Some(format!("Could not register {}: {e}. Another app may be using it.", s.shortcut));
+                    problem = Some(format!(
+                        "Could not register {}: {e}. Another app may be using it.",
+                        s.shortcut
+                    ));
                 }
             }
             Err(e) => problem = Some(format!("{} is not a valid shortcut: {e}", s.shortcut)),
@@ -655,7 +767,10 @@ fn apply_settings(app: &AppHandle, s: &Settings) -> Option<String> {
         match s.live_shortcut.trim().parse::<Shortcut>() {
             Ok(sc) => {
                 if let Err(e) = shortcuts.register(sc) {
-                    problem.get_or_insert(format!("Could not register {}: {e}. Another app may be using it.", s.live_shortcut));
+                    problem.get_or_insert(format!(
+                        "Could not register {}: {e}. Another app may be using it.",
+                        s.live_shortcut
+                    ));
                 }
             }
             Err(e) => {
@@ -667,7 +782,11 @@ fn apply_settings(app: &AppHandle, s: &Settings) -> Option<String> {
 
     let auto = app.autolaunch();
     if auto.is_enabled().unwrap_or(false) != s.autostart {
-        let result = if s.autostart { auto.enable() } else { auto.disable() };
+        let result = if s.autostart {
+            auto.enable()
+        } else {
+            auto.disable()
+        };
         if let Err(e) = result {
             problem.get_or_insert(format!("Could not change start-with-Windows: {e}"));
         }
@@ -688,7 +807,11 @@ struct SaveResult {
 }
 
 #[tauri::command]
-fn save_settings(app: AppHandle, state: State<App>, mut settings: Settings) -> Result<SaveResult, String> {
+fn save_settings(
+    app: AppHandle,
+    state: State<App>,
+    mut settings: Settings,
+) -> Result<SaveResult, String> {
     settings.opacity = settings.opacity.clamp(0.3, 1.0);
     settings.dock_along = settings.dock_along.clamp(0.0, 1.0);
     settings.save(&state.dir)?;
@@ -716,7 +839,11 @@ struct Status {
 #[tauri::command(async)]
 fn status(state: State<App>) -> Status {
     let s = state.settings.lock().unwrap().clone();
-    let found = if s.provider == "codex" { backend::resolve_cli("codex", &s.codex_path) } else { backend::resolve_cli("claude", &s.claude_path) };
+    let found = if s.provider == "codex" {
+        backend::resolve_cli("codex", &s.codex_path)
+    } else {
+        backend::resolve_cli("claude", &s.claude_path)
+    };
     Status {
         provider: s.provider,
         cli_found: found.is_ok(),
@@ -744,7 +871,9 @@ fn new_chat(app: AppHandle, state: State<App>) {
     let live = is_live(&app);
     state.engine.new_chat();
     let s = state.settings.lock().unwrap().clone();
-    state.engine.prewarm(&s.provider, &s.claude_model, &s.claude_path, live);
+    state
+        .engine
+        .prewarm(&s.provider, &s.claude_model, &s.claude_path, live);
 }
 
 #[tauri::command]
@@ -755,7 +884,10 @@ fn hide(app: AppHandle) {
 /// The interface asks for the window to match its content.
 #[tauri::command]
 fn resize(app: AppHandle, state: State<App>, width: f64, height: f64) {
-    *state.size.lock().unwrap() = (width.clamp(120.0, MAX_WIDTH), height.clamp(40.0, MAX_HEIGHT));
+    *state.size.lock().unwrap() = (
+        width.clamp(120.0, MAX_WIDTH),
+        height.clamp(40.0, MAX_HEIGHT),
+    );
     place_overlay(&app);
 }
 
@@ -771,7 +903,9 @@ fn focus(app: AppHandle) {
 
 #[tauri::command]
 fn copy_text(text: String) -> Result<(), String> {
-    arboard::Clipboard::new().and_then(|mut c| c.set_text(text)).map_err(|e| e.to_string())
+    arboard::Clipboard::new()
+        .and_then(|mut c| c.set_text(text))
+        .map_err(|e| e.to_string())
 }
 
 /// Paste the answer into the app the user came from.
@@ -781,7 +915,9 @@ fn insert_text(app: AppHandle, state: State<App>, text: String) -> Result<(), St
     let target = state.snapshot.lock().unwrap().foreground.hwnd;
     hide_overlay(&app);
     if target == 0 {
-        return Err("Copied to the clipboard. Pasting into other apps works on Windows only.".into());
+        return Err(
+            "Copied to the clipboard. Pasting into other apps works on Windows only.".into(),
+        );
     }
     platform::paste_into(target);
     Ok(())
@@ -790,10 +926,34 @@ fn insert_text(app: AppHandle, state: State<App>, text: String) -> Result<(), St
 fn build_tray(app: &AppHandle, hide_from_capture: bool) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open Agent Desk", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
-    let live = CheckMenuItem::with_id(app, "live", "Work with me (live)", true, false, None::<&str>)?;
-    let capture = CheckMenuItem::with_id(app, "capture", "Hide from screen sharing", true, hide_from_capture, None::<&str>)?;
+    let live = CheckMenuItem::with_id(
+        app,
+        "live",
+        "Work with me (live)",
+        true,
+        false,
+        None::<&str>,
+    )?;
+    let capture = CheckMenuItem::with_id(
+        app,
+        "capture",
+        "Hide from screen sharing",
+        true,
+        hide_from_capture,
+        None::<&str>,
+    )?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &live, &settings, &capture, &PredefinedMenuItem::separator(app)?, &quit])?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &open,
+            &live,
+            &settings,
+            &capture,
+            &PredefinedMenuItem::separator(app)?,
+            &quit,
+        ],
+    )?;
     *app.state::<App>().capture_item.lock().unwrap() = Some(capture);
     *app.state::<App>().live_item.lock().unwrap() = Some(live);
 
@@ -840,7 +1000,12 @@ fn build_tray(app: &AppHandle, hide_from_capture: bool) -> tauri::Result<()> {
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
                 toggle_overlay(tray.app_handle());
             }
         });
@@ -857,19 +1022,35 @@ fn main() {
             let info = capture_context(app);
             show_overlay(app, true, info);
         }))
-        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
                     let app = app.clone();
-                    if INSERT_SHORTCUT.parse::<Shortcut>().is_ok_and(|s| &s == shortcut) {
+                    if INSERT_SHORTCUT
+                        .parse::<Shortcut>()
+                        .is_ok_and(|s| &s == shortcut)
+                    {
                         if event.state() == ShortcutState::Pressed {
                             let _ = app.emit_to("main", "insert-request", ());
                         }
                         return;
                     }
-                    let live_key = app.state::<App>().settings.lock().unwrap().live_shortcut.clone();
-                    if live_key.trim().parse::<Shortcut>().is_ok_and(|s| &s == shortcut) {
+                    let live_key = app
+                        .state::<App>()
+                        .settings
+                        .lock()
+                        .unwrap()
+                        .live_shortcut
+                        .clone();
+                    if live_key
+                        .trim()
+                        .parse::<Shortcut>()
+                        .is_ok_and(|s| &s == shortcut)
+                    {
                         if event.state() == ShortcutState::Pressed {
                             std::thread::spawn(move || live_toggle(&app));
                         }
@@ -970,7 +1151,8 @@ fn main() {
                     // Hide when the user clicks elsewhere (if they chose that).
                     WindowEvent::Focused(false) => {
                         let state = events_app.state::<App>();
-                        let just_shown = state.shown_at.lock().unwrap().elapsed() < Duration::from_millis(400);
+                        let just_shown =
+                            state.shown_at.lock().unwrap().elapsed() < Duration::from_millis(400);
                         if state.settings.lock().unwrap().hide_on_blur && !just_shown {
                             hide_overlay(&events_app);
                         }
