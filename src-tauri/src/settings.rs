@@ -36,6 +36,11 @@ pub struct Settings {
     pub opacity: f64,
     /// Show a soft glow around the screen while listening.
     pub edge_glow: bool,
+    /// Turns "work with me" live mode on and off.
+    pub live_shortcut: String,
+    /// In live mode, also listen to what the computer is playing (the other
+    /// people in a call), not just the microphone.
+    pub live_system_audio: bool,
 }
 
 impl Default for Settings {
@@ -58,6 +63,8 @@ impl Default for Settings {
             dock_along: 0.5,
             opacity: 0.92,
             edge_glow: true,
+            live_shortcut: "Ctrl+Alt+L".into(),
+            live_system_audio: true,
         }
     }
 }

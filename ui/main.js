@@ -22,11 +22,12 @@ const STATES = {
   thinking: ["Thinking", "#c299ff"],
   answering: ["Answering", "#82ff9e"],
   done: ["Done", "#8ab4ff"],
+  live: ["Working with you", "#7fe3ff"],
   error: ["Couldn't do that", "#ff8f8f"],
 };
 const MODELS = { haiku: "Haiku", sonnet: "Sonnet", opus: "Opus" };
-const TEXT_FIELDS = ["wake_mode", "shortcut", "provider", "claude_model", "codex_model", "claude_path", "codex_path", "voice_model", "dock_edge"];
-const TOGGLES = ["include_screen", "hide_from_capture", "hide_on_blur", "autostart", "edge_glow"];
+const TEXT_FIELDS = ["wake_mode", "shortcut", "live_shortcut", "provider", "claude_model", "codex_model", "claude_path", "codex_path", "voice_model", "dock_edge"];
+const TOGGLES = ["include_screen", "hide_from_capture", "hide_on_blur", "autostart", "edge_glow", "live_system_audio"];
 const METER_COLUMNS = 10;
 
 const state = {
@@ -41,6 +42,8 @@ const state = {
   startFresh: false,   // the engine lost the conversation; clear before the next question
   lastActivity: Date.now(),
   askedAt: 0,
+  live: false,         // "work with me" mode is on
+  quiet: null,         // a live check-in whose answer is not shown yet
   levels: new Array(METER_COLUMNS).fill(0),
 };
 
@@ -63,6 +66,12 @@ function setPhase(phase, top, label) {
   el.stop.hidden = !state.busy;
   // Idle shows the text field; anything else shows the status label.
   setView(phase === "idle" ? "input" : "status");
+}
+
+// What the notch shows when nothing is in progress.
+function rest(top) {
+  if (state.live) setPhase("live", top ?? el.topLine.textContent);
+  else setPhase(state.answer.trim() ? "done" : "idle", top ?? contextLine());
 }
 
 function setView(view) {
@@ -111,7 +120,7 @@ function applyLook() {
 
 function refreshPanel() {
   const settingsOpen = !el.settings.hidden;
-  const hasThread = el.thread.children.length > 0;
+  const hasThread = [...el.thread.children].some((n) => !n.hidden && !n.classList.contains("current"));
   const hasAnswer = !state.busy && state.answer.trim().length > 0;
   el.thread.hidden = !hasThread || settingsOpen;
   el.actions.hidden = !hasAnswer || settingsOpen;
@@ -145,8 +154,10 @@ function renderAnswer() {
     renderQueued = false;
     if (!state.answerNode) return;
     const stick = el.thread.scrollHeight - el.thread.scrollTop - el.thread.clientHeight < 40;
+    const wasHidden = state.answerNode.hidden;
     state.answerNode.hidden = !state.answer;
     state.answerNode.innerHTML = window.renderMarkdown(state.answer);
+    if (wasHidden !== state.answerNode.hidden) refreshPanel(); // the notch grows now
     if (stick) el.thread.scrollTop = el.thread.scrollHeight;
   });
 }
@@ -179,24 +190,38 @@ function flash(text) {
 /* ---------- asking ---------- */
 
 // Put a new question on screen. The answer fills in as events arrive.
-function beginTurn(shown) {
+// A `quiet` turn is a live-mode check-in: nothing appears unless the AI
+// actually has something to say.
+function beginTurn(shown, quiet = false) {
   if (state.startFresh) clearThread();
-  showNotice("");
-  if (!el.settings.hidden) closeSettings();
+  if (!quiet) showNotice("");
+  if (!el.settings.hidden && !quiet) closeSettings();
   // The notch's top line already shows the current question, so only
   // earlier questions are listed in the conversation.
   el.thread.querySelector(".msg.user.current")?.classList.remove("current");
-  addMessage("user", shown).classList.add("current");
+  const before = { answer: state.answer, node: state.answerNode };
+  const userNode = addMessage("user", shown);
+  userNode.classList.add("current");
   state.answer = "";
   state.answerNode = addMessage("ai", "");
   state.answerNode.hidden = true;
   state.askedAt = performance.now();
   state.lastActivity = Date.now();
-  el.stat.textContent = "";
   state.busy = true;
-  setPhase("thinking", shown);
-  refreshPanel();
+  if (quiet) {
+    userNode.hidden = true;
+    state.quiet = { userNode, before };
+    refreshPanel();
+  } else {
+    state.quiet = null;
+    el.stat.textContent = "";
+    setPhase("thinking", shown);
+    refreshPanel();
+  }
 }
+
+// In live mode the AI answers "." when it has nothing to add.
+const nothingToSay = (text) => text.replace(/[.\s]/g, "") === "";
 
 // The turn id is now known: accept its events, including any early ones.
 function adoptTurn(turn) {
@@ -226,18 +251,34 @@ function onAiEvent(payload) {
   if (payload.turn > state.turn || state.turn === Infinity) return void state.early.push(payload);
   if (payload.turn !== state.turn) return;
   if (payload.kind === "delta") {
-    if (!state.answer) {
+    state.answer += payload.text;
+    if (state.quiet) {
+      if (nothingToSay(state.answer)) return; // still nothing worth showing
+      state.quiet.userNode.hidden = false;
+      el.topLine.textContent = state.quiet.userNode.textContent;
+      state.quiet = null;
+      el.stat.textContent = "";
+    }
+    if (state.phase !== "answering") {
       setPhase("answering");
       state.answerNode?.classList.add("streaming");
     }
-    state.answer += payload.text;
     renderAnswer();
   } else if (payload.kind === "done") {
     state.lastActivity = Date.now();
     state.busy = false;
-    state.answerNode?.classList.remove("streaming");
-    el.stat.textContent = `${modelName()} · ${((performance.now() - state.askedAt) / 1000).toFixed(1)}s`;
-    setPhase("done");
+    if (state.quiet) {
+      // Nothing to add: remove the placeholders and keep the last answer.
+      state.quiet.userNode.remove();
+      state.answerNode?.remove();
+      state.answer = state.quiet.before.answer;
+      state.answerNode = state.quiet.before.node;
+      state.quiet = null;
+    } else {
+      state.answerNode?.classList.remove("streaming");
+      el.stat.textContent = `${modelName()} · ${((performance.now() - state.askedAt) / 1000).toFixed(1)}s`;
+    }
+    rest();
     refreshPanel();
   } else if (payload.kind === "error") {
     fail(payload.text);
@@ -247,6 +288,8 @@ function onAiEvent(payload) {
 function fail(message) {
   if (state.answerNode && !state.answer) state.answerNode.remove();
   state.answerNode?.classList.remove("streaming");
+  state.quiet?.userNode.remove();
+  state.quiet = null;
   state.answerNode = null;
   state.answer = ""; // a cut-off answer is not offered for Insert
   state.busy = false;
@@ -264,12 +307,21 @@ async function stop() {
   state.answerNode?.classList.remove("streaming");
   state.busy = false;
   state.startFresh = true; // stopping ends the AI session
+  state.quiet = null;
+  if (state.live) return void rest();
   setPhase("idle", contextLine());
   refreshPanel();
   focusPrompt();
 }
 
 async function newChat() {
+  // In live mode this only clears what is on screen: the AI keeps what it
+  // has heard so far.
+  if (state.live) {
+    clearThread();
+    showNotice("");
+    return void rest();
+  }
   clearThread();
   state.busy = false;
   showNotice("");
@@ -295,7 +347,7 @@ async function copyAnswer() {
 
 // Switch the notch to its text field and take keyboard focus.
 async function focusPrompt() {
-  if (state.busy) return;
+  if (state.busy && !state.quiet) return;
   if (state.phase !== "idle") setPhase("idle", contextLine());
   await invoke("focus");
   el.prompt.focus();
@@ -401,14 +453,16 @@ el.thread.addEventListener("click", async (e) => {
   flash("Code copied");
 });
 
-el.shortcutInput.addEventListener("keydown", (e) => {
-  if (e.key === "Tab" || e.key === "Escape") return;
-  e.preventDefault();
-  e.stopPropagation();
-  if (e.key === "Backspace" || e.key === "Delete") return void (el.shortcutInput.value = "");
-  const acc = acceleratorFrom(e);
-  if (acc) el.shortcutInput.value = acc;
-});
+for (const input of el.settings.querySelectorAll("input.shortcut")) {
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Tab" || e.key === "Escape") return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.key === "Backspace" || e.key === "Delete") return void (input.value = "");
+    const acc = acceleratorFrom(e);
+    if (acc) input.value = acc;
+  });
+}
 
 el.settings.addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -424,6 +478,7 @@ el.settings.addEventListener("submit", async (e) => {
     el.settingsMsg.hidden = false;
   };
   if (next.wake_mode === "shortcut" && !next.shortcut) return warn("Set a shortcut, or choose wake keys, so you can open Agent Desk.");
+  if (next.shortcut && next.shortcut === next.live_shortcut) return warn("The talk shortcut and the live-mode shortcut must be different.");
   try {
     const warning = await saveSettings(next);
     if (warning) warn(warning);
@@ -438,7 +493,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     e.preventDefault();
     if (!el.settings.hidden) closeSettings();
-    else if (state.busy) stop();
+    else if (state.busy && !state.quiet) stop();
     else invoke("hide");
   } else if (e.key === "Enter" && ctrl) {
     e.preventDefault();
@@ -501,18 +556,18 @@ listen("wake", ({ payload }) => {
   // The AI session is closed after it has been idle for a while, so an old
   // conversation cannot be continued; start clean instead of pretending.
   const idleMs = Date.now() - state.lastActivity;
-  if (!state.busy && idleMs >= state.settings.keep_warm_minutes * 60000) clearThread();
+  if (!state.busy && !state.live && idleMs >= state.settings.keep_warm_minutes * 60000) clearThread();
   state.lastActivity = Date.now();
   state.context = payload;
   if (!el.settings.hidden) closeSettings();
-  if (payload.typing && !state.busy) {
+  if (payload.typing && (!state.busy || state.quiet)) {
     setPhase("idle", contextLine());
     el.prompt.focus();
     el.prompt.select();
   }
 });
 listen("refocus", ({ payload }) => {
-  if (payload && !state.busy) {
+  if (payload && (!state.busy || state.quiet)) {
     setPhase("idle", contextLine());
     el.prompt.focus();
   }
@@ -533,7 +588,8 @@ listen("phase", ({ payload }) => {
     setPhase("preparing", text);
   } else if (phase === "cancelled") {
     // The keys turned out to be an ordinary shortcut. Go back to how it was.
-    if (el.panel.hidden) invoke("hide");
+    if (state.live) rest();
+    else if (el.panel.hidden) invoke("hide");
     else setPhase(state.busy ? "thinking" : state.answer ? "done" : "idle", "");
   } else if (phase === "error") {
     state.busy = false;
@@ -541,13 +597,40 @@ listen("phase", ({ payload }) => {
     showNotice(text);
   }
 });
-listen("level", ({ payload }) => state.phase === "listening" && pushLevel(payload));
+listen("level", ({ payload }) => (state.phase === "listening" || state.phase === "live") && pushLevel(payload));
 
 // Speech was understood and sent as a question.
 listen("asked", ({ payload }) => {
-  beginTurn(payload.text);
+  beginTurn(payload.text, payload.quiet);
   adoptTurn(payload.turn);
 });
+
+// "Work with me" was switched on or off.
+listen("live", ({ payload }) => {
+  if (payload === state.live) return void (payload && state.phase === "preparing" && rest("Listening to you and your screen"));
+  state.live = payload;
+  state.levels.fill(0);
+  pushLevel(0);
+  if (payload) {
+    if (!el.settings.hidden) closeSettings();
+    clearThread();
+    showNotice("");
+    setPhase("live", "Listening to you and your screen");
+  } else {
+    // The live conversation ends with the mode.
+    state.startFresh = el.thread.children.length > 0;
+    state.quiet?.userNode.remove();
+    state.quiet = null;
+    state.busy = false;
+    if (el.panel.hidden) invoke("hide");
+    else rest("");
+  }
+});
+// Show the latest thing heard, so it is clear the app is following along.
+listen("live-heard", ({ payload }) => {
+  if (state.live && state.phase === "live") el.topLine.textContent = `${payload.who}: ${payload.text}`;
+});
+listen("live-note", ({ payload }) => showNotice(payload));
 
 listen("insert-request", insertAnswer);
 listen("open-settings", openSettings);

@@ -62,7 +62,10 @@
                 </select>
               </label>
               <label>Shortcut (hold to talk, tap to type)
-                <input name="shortcut" id="shortcut-input" placeholder="Click, then press keys" readonly>
+                <input name="shortcut" id="shortcut-input" class="shortcut" placeholder="Click, then press keys" readonly>
+              </label>
+              <label>Work with me (live mode) on and off
+                <input name="live_shortcut" id="live-shortcut-input" class="shortcut" placeholder="Click, then press keys" readonly>
               </label>
               <label>Speech model
                 <select name="voice_model">
@@ -119,6 +122,7 @@
             <section>
               <h3>Behaviour</h3>
               <label class="switch"><input type="checkbox" name="edge_glow"><span>Glow around the screen while listening</span></label>
+              <label class="switch"><input type="checkbox" name="live_system_audio"><span>In live mode, also hear the computer's audio</span></label>
               <label class="switch"><input type="checkbox" name="include_screen"><span>Send a screenshot with each new question</span></label>
               <label class="switch"><input type="checkbox" name="hide_from_capture"><span>Hide from screen sharing</span></label>
               <label class="switch"><input type="checkbox" name="hide_on_blur"><span>Hide when I click elsewhere</span></label>

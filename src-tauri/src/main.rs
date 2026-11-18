@@ -17,7 +17,7 @@ use settings::Settings;
 use std::{
     path::PathBuf,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
     time::{Duration, Instant},
@@ -54,6 +54,14 @@ struct Snapshot {
 struct Talk {
     id: u64,
     recording: audio::Recording,
+    /// Whether "Listening" has been shown for it yet.
+    shown: Arc<AtomicBool>,
+}
+
+/// "Work with me" live mode while it is running.
+struct LiveSession {
+    stop: Arc<AtomicBool>,
+    _listeners: Vec<audio::Listener>,
 }
 
 /// The screen the overlay is on: its usable area, full bounds and scale.
@@ -84,6 +92,8 @@ struct App {
     moves: AtomicU64,
     shown_at: Mutex<Instant>,
     capture_item: Mutex<Option<CheckMenuItem<tauri::Wry>>>,
+    live: Mutex<Option<LiveSession>>,
+    live_item: Mutex<Option<CheckMenuItem<tauri::Wry>>>,
 }
 
 #[derive(Serialize, Clone)]
@@ -106,6 +116,18 @@ struct Phase {
 struct Asked {
     turn: u64,
     text: String,
+    /// A live-mode check-in: show the answer only if there is one.
+    quiet: bool,
+}
+
+#[derive(Serialize, Clone)]
+struct Heard {
+    who: &'static str,
+    text: String,
+}
+
+fn is_live(app: &AppHandle) -> bool {
+    app.state::<App>().live.lock().unwrap().is_some()
 }
 
 fn overlay(app: &AppHandle) -> Option<WebviewWindow> {
@@ -190,6 +212,7 @@ fn finish_drag(app: &AppHandle) {
 /* ---------- showing and hiding ---------- */
 
 fn hide_overlay(app: &AppHandle) {
+    live_stop(app);
     if let Some(win) = overlay(app) {
         let _ = win.hide();
     }
@@ -255,8 +278,9 @@ fn show_overlay(app: &AppHandle, typing: bool, info: Option<WakeInfo>) {
     let app2 = app.clone();
     std::thread::spawn(move || {
         let state = app2.state::<App>();
+        let live = is_live(&app2);
         let s = state.settings.lock().unwrap().clone();
-        state.engine.prewarm(&s.provider, &s.claude_model, &s.claude_path);
+        state.engine.prewarm(&s.provider, &s.claude_model, &s.claude_path, live);
     });
 }
 
@@ -328,6 +352,7 @@ fn send_question(app: &AppHandle, prompt: &str, with_screen: bool) -> Result<u64
         claude_path: s.claude_path,
         codex_model: s.codex_model,
         codex_path: s.codex_path,
+        live: is_live(app),
     })
 }
 
@@ -368,9 +393,11 @@ fn talk_start(app: &AppHandle) {
                 let _ = level_app.emit_to("main", "level", level);
             }
         });
-        *slot = Some(Talk { id, recording });
-        id
+        let shown = Arc::new(AtomicBool::new(false));
+        *slot = Some(Talk { id, recording, shown: shown.clone() });
+        (id, shown)
     };
+    let (id, shown) = id;
     let info = capture_context(app);
 
     // Only show "Listening" once it is clearly a hold and not a tap.
@@ -381,6 +408,7 @@ fn talk_start(app: &AppHandle) {
         if state.talk.lock().unwrap().as_ref().map(|t| t.id) != Some(id) {
             return;
         }
+        shown.store(true, Ordering::SeqCst);
         show_overlay(&app, false, info);
         phase(&app, "listening", "");
         glow(&app, true);
@@ -412,7 +440,7 @@ fn talk_end(app: &AppHandle, held_ms: u64) {
             return Err("I couldn't make out any words. Try again a little closer to the microphone.".into());
         }
         let turn = send_question(app, &text, true)?;
-        let _ = app.emit_to("main", "asked", Asked { turn, text });
+        let _ = app.emit_to("main", "asked", Asked { turn, text, quiet: false });
         Ok(turn)
     })();
     if let Err(message) = result {
@@ -426,8 +454,173 @@ fn talk_cancel(app: &AppHandle) {
     if let Some(talk) = talk {
         talk.recording.cancel();
         glow(app, false);
-        phase(app, "cancelled", "");
+        // Nothing to undo on screen if "Listening" never appeared.
+        if talk.shown.load(Ordering::SeqCst) {
+            phase(app, "cancelled", "");
+        }
     }
+}
+
+/* ---------- live mode ("work with me") ---------- */
+
+/// How often a fresh screenshot goes along with what was heard.
+const LIVE_SHOT_EVERY: Duration = Duration::from_secs(15);
+
+fn set_live_item(app: &AppHandle, on: bool) {
+    if let Some(item) = app.state::<App>().live_item.lock().unwrap().as_ref() {
+        let _ = item.set_checked(on);
+    }
+}
+
+fn live_toggle(app: &AppHandle) {
+    if is_live(app) {
+        live_stop(app);
+    } else {
+        live_start(app);
+    }
+}
+
+fn live_stop(app: &AppHandle) {
+    let session = app.state::<App>().live.lock().unwrap().take();
+    if let Some(session) = session {
+        session.stop.store(true, Ordering::SeqCst);
+        set_live_item(app, false);
+        let _ = app.emit_to("main", "live", false);
+    }
+}
+
+/// Start following along: listen to the microphone (and, if enabled, the
+/// computer's own audio), transcribe each thing that is said, and pass it
+/// to the AI together with an occasional screenshot.
+fn live_start(app: &AppHandle) {
+    let state = app.state::<App>();
+    let system_audio = state.settings.lock().unwrap().live_system_audio;
+    let info = capture_context(app);
+
+    let (heard, hearing) = std::sync::mpsc::channel::<(&'static str, Vec<f32>)>();
+    let mut listeners = Vec::new();
+    let mut note = None;
+
+    let listen = |who: &'static str, source: audio::Source, with_meter: bool| {
+        let tx = heard.clone();
+        let segmenter = Mutex::new(audio::Segmenter::default());
+        let (level_app, started, last) = (app.clone(), Instant::now(), AtomicU64::new(0));
+        audio::Listener::start(source, move |chunk| {
+            if with_meter {
+                let now = started.elapsed().as_millis() as u64;
+                if now.saturating_sub(last.load(Ordering::Relaxed)) >= 60 {
+                    last.store(now, Ordering::Relaxed);
+                    let _ = level_app.emit_to("main", "level", audio::loudness(chunk));
+                }
+            }
+            if let Ok(mut seg) = segmenter.lock() {
+                for utterance in seg.push(chunk) {
+                    let _ = tx.send((who, utterance));
+                }
+            }
+        })
+    };
+    match listen("Me", audio::Source::Microphone, true) {
+        Ok(l) => listeners.push(l),
+        Err(e) => {
+            show_overlay(app, false, info);
+            phase(app, "error", e);
+            return;
+        }
+    }
+    if system_audio {
+        match listen("Them", audio::Source::System, false) {
+            Ok(l) => listeners.push(l),
+            Err(e) => note = Some(format!("Only your microphone is being heard. {e}")),
+        }
+    }
+
+    let stop = Arc::new(AtomicBool::new(false));
+    *state.live.lock().unwrap() = Some(LiveSession { stop: stop.clone(), _listeners: listeners });
+    set_live_item(app, true);
+    show_overlay(app, false, info);
+    let _ = app.emit_to("main", "live", true);
+    if let Some(note) = note {
+        let _ = app.emit_to("main", "live-note", note);
+    }
+
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let state = app.state::<App>();
+        if let Err(e) = prepare_speech(&app, true) {
+            phase(&app, "error", e);
+            live_stop(&app);
+            return;
+        }
+        let _ = app.emit_to("main", "live", true);
+        let mut pending: Vec<String> = Vec::new();
+        let mut last_shot: Option<Instant> = None;
+        while !stop.load(Ordering::SeqCst) {
+            if let Ok((who, samples)) = hearing.recv_timeout(Duration::from_millis(300)) {
+                // Speech recognition is slower than speech when several
+                // people talk at once; anything said meanwhile waits in the
+                // channel and is handled next time round.
+                if let Ok(text) = state.speech.transcribe(&samples) {
+                    if text.split_whitespace().count() >= 2 {
+                        let _ = app.emit_to("main", "live-heard", Heard { who, text: text.clone() });
+                        pending.push(format!("{who}: {text}"));
+                    }
+                }
+            }
+            // One question at a time: what is heard during an answer goes
+            // along with the next one.
+            if pending.is_empty() || state.engine.is_busy() || stop.load(Ordering::SeqCst) {
+                continue;
+            }
+            let with_shot = last_shot.is_none_or(|t| t.elapsed() >= LIVE_SHOT_EVERY);
+            let shown = pending.last().cloned().unwrap_or_default();
+            match send_live(&app, &pending, with_shot) {
+                Ok(turn) => {
+                    if with_shot {
+                        last_shot = Some(Instant::now());
+                    }
+                    pending.clear();
+                    let _ = app.emit_to("main", "asked", Asked { turn, text: shown, quiet: true });
+                }
+                Err(e) => {
+                    phase(&app, "error", e);
+                    live_stop(&app);
+                    return;
+                }
+            }
+        }
+    });
+}
+
+/// Pass what was just heard to the AI, with the screen as it is now.
+fn send_live(app: &AppHandle, lines: &[String], with_shot: bool) -> Result<u64, String> {
+    let state = app.state::<App>();
+    let s = state.settings.lock().unwrap().clone();
+    let foreground = platform::foreground();
+    let ours = overlay(app).map(|w| own_hwnd(&w)).unwrap_or(0);
+    let jpeg = if with_shot && s.include_screen && (foreground.hwnd != ours || ours == 0) {
+        platform::capture_monitor(foreground.hwnd).and_then(|img| platform::to_jpeg(img, SHOT_MAX_EDGE))
+    } else {
+        None
+    };
+    let mut text = String::new();
+    if !foreground.title.is_empty() {
+        text.push_str(&format!("[Active window: {} ({})]\n", foreground.title, foreground.process));
+    }
+    if jpeg.is_some() {
+        text.push_str("[A screenshot of my screen right now is attached.]\n");
+    }
+    text.push_str(&lines.join("\n"));
+    state.engine.ask(Ask {
+        prompt: text,
+        jpeg,
+        provider: s.provider,
+        claude_model: s.claude_model,
+        claude_path: s.claude_path,
+        codex_model: s.codex_model,
+        codex_path: s.codex_path,
+        live: true,
+    })
 }
 
 /* ---------- settings ---------- */
@@ -456,6 +649,18 @@ fn apply_settings(app: &AppHandle, s: &Settings) -> Option<String> {
                 }
             }
             Err(e) => problem = Some(format!("{} is not a valid shortcut: {e}", s.shortcut)),
+        }
+    }
+    if !s.live_shortcut.trim().is_empty() {
+        match s.live_shortcut.trim().parse::<Shortcut>() {
+            Ok(sc) => {
+                if let Err(e) = shortcuts.register(sc) {
+                    problem.get_or_insert(format!("Could not register {}: {e}. Another app may be using it.", s.live_shortcut));
+                }
+            }
+            Err(e) => {
+                problem.get_or_insert(format!("{} is not a valid shortcut: {e}", s.live_shortcut));
+            }
         }
     }
     hotkey::set_mode(hotkey::Mode::parse(&s.wake_mode));
@@ -535,10 +740,11 @@ fn stop(state: State<App>) {
 }
 
 #[tauri::command(async)]
-fn new_chat(state: State<App>) {
+fn new_chat(app: AppHandle, state: State<App>) {
+    let live = is_live(&app);
     state.engine.new_chat();
     let s = state.settings.lock().unwrap().clone();
-    state.engine.prewarm(&s.provider, &s.claude_model, &s.claude_path);
+    state.engine.prewarm(&s.provider, &s.claude_model, &s.claude_path, live);
 }
 
 #[tauri::command]
@@ -584,10 +790,12 @@ fn insert_text(app: AppHandle, state: State<App>, text: String) -> Result<(), St
 fn build_tray(app: &AppHandle, hide_from_capture: bool) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open Agent Desk", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
+    let live = CheckMenuItem::with_id(app, "live", "Work with me (live)", true, false, None::<&str>)?;
     let capture = CheckMenuItem::with_id(app, "capture", "Hide from screen sharing", true, hide_from_capture, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &settings, &capture, &PredefinedMenuItem::separator(app)?, &quit])?;
+    let menu = Menu::with_items(app, &[&open, &live, &settings, &capture, &PredefinedMenuItem::separator(app)?, &quit])?;
     *app.state::<App>().capture_item.lock().unwrap() = Some(capture);
+    *app.state::<App>().live_item.lock().unwrap() = Some(live);
 
     let open_typing = |app: &AppHandle| {
         let info = capture_context(app);
@@ -599,6 +807,10 @@ fn build_tray(app: &AppHandle, hide_from_capture: bool) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(move |app, event| match event.id.as_ref() {
             "open" => open_typing(app),
+            "live" => {
+                let app = app.clone();
+                std::thread::spawn(move || live_toggle(&app));
+            }
             "settings" => {
                 open_typing(app);
                 let _ = app.emit_to("main", "open-settings", ());
@@ -653,6 +865,13 @@ fn main() {
                     if INSERT_SHORTCUT.parse::<Shortcut>().is_ok_and(|s| &s == shortcut) {
                         if event.state() == ShortcutState::Pressed {
                             let _ = app.emit_to("main", "insert-request", ());
+                        }
+                        return;
+                    }
+                    let live_key = app.state::<App>().settings.lock().unwrap().live_shortcut.clone();
+                    if live_key.trim().parse::<Shortcut>().is_ok_and(|s| &s == shortcut) {
+                        if event.state() == ShortcutState::Pressed {
+                            std::thread::spawn(move || live_toggle(&app));
                         }
                         return;
                     }
@@ -722,6 +941,8 @@ fn main() {
                 moves: AtomicU64::new(0),
                 shown_at: Mutex::new(Instant::now()),
                 capture_item: Mutex::new(None),
+                live: Mutex::new(None),
+                live_item: Mutex::new(None),
             });
 
             build_tray(&handle, settings.hide_from_capture)?;
@@ -781,8 +1002,11 @@ fn main() {
                 std::thread::sleep(Duration::from_secs(30));
                 let state = reaper.state::<App>();
                 let minutes = state.settings.lock().unwrap().keep_warm_minutes;
-                state.engine.reap_idle(minutes);
-                if state.talk.lock().unwrap().is_none() {
+                // A quiet stretch in a meeting must not end the session.
+                if state.live.lock().unwrap().is_none() {
+                    state.engine.reap_idle(minutes);
+                }
+                if state.talk.lock().unwrap().is_none() && state.live.lock().unwrap().is_none() {
                     state.speech.reap_idle(minutes);
                 }
             });

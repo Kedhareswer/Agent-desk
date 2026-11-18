@@ -16,6 +16,11 @@ on your own computer.
 - **Hold to talk.** Hold Ctrl + Alt, speak, release. It transcribes what you
   said and starts working, with no Enter key. A quick tap opens the same
   notch for typing instead.
+- **Work with me (live mode).** Press Ctrl + Alt + L and it follows along:
+  it listens to your microphone and to the computer's audio (the other
+  people in a call), looks at your screen now and then, and speaks up only
+  when there is something to help with, such as a question someone just
+  asked. Press the keys again to stop.
 - **One notch.** Collapsed, it shows the state (Listening, Thinking,
   Answering, Done). When there is something to read, the same shape grows to
   hold it, then shrinks back.
@@ -57,6 +62,7 @@ signed, so Windows SmartScreen will ask you to confirm.
 | --- | --- |
 | Ctrl + Alt (hold) | Talk; release to send |
 | Ctrl + Alt (tap) | Open the notch to type, or hide it |
+| Ctrl + Alt + L | Turn "work with me" live mode on or off |
 | Ctrl + Alt + Enter | Paste the answer into the app in front |
 | Enter | Ask what you typed (empty = "help with what's on my screen") |
 | Shift + Enter | New line |
@@ -89,6 +95,18 @@ Codex runs as `codex exec --json` in a read-only sandbox.
 Neither Claude nor Codex accepts audio, so speech is transcribed locally
 with [whisper.cpp](https://github.com/ggml-org/whisper.cpp) and sent as
 text. Audio never leaves the computer.
+
+In live mode each thing that is said is cut out of the audio stream at the
+pauses, transcribed, and passed to the AI marked "Me" (microphone) or
+"Them" (computer audio), with a fresh screenshot every 15 seconds at most.
+The AI is told to answer with a single full stop when it has nothing to
+add, and the notch stays collapsed for those. Live mode uses more of your
+subscription's allowance than asking by hand, because every remark is a
+request. With speakers instead of headphones, the microphone also picks up
+the other people, so they may be heard twice.
+
+Listening to a call records other people. Depending on where you and they
+are, that can require telling them or getting their consent.
 
 The modifier-only wake gestures use a low-level keyboard hook because Windows
 cannot register a hotkey made only of modifier keys. The hook looks for the

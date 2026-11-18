@@ -21,6 +21,7 @@ const fake = () => {
     include_screen: true, hide_from_capture: true, hide_on_blur: false, autostart: false,
     claude_path: "", codex_path: "", keep_warm_minutes: 5,
     voice_model: "base.en", dock_edge: "top", dock_along: 0.5, opacity: 0.92, edge_glow: true,
+    live_shortcut: "Ctrl+Alt+L", live_system_audio: true,
   };
   const emit = (name, payload) => (listeners[name] || []).forEach((fn) => fn({ payload }));
   window.__fake = { calls, emit, cliFound: true, failAsk: null, nextTurn: () => ++turn };
@@ -202,6 +203,63 @@ assert.match(await page.textContent(".msg.error"), /not found/);
 await page.evaluate(() => (window.__fake.failAsk = null));
 await page.keyboard.press("Control+n");
 
+/* ----- live mode: "work with me" ----- */
+
+await emit("live", true);
+assert.equal(await notch("state"), "live");
+assert.equal(await page.textContent("#label"), "Working with you");
+assert.ok(await page.isVisible("#meter"));
+assert.ok(await page.isHidden("#panel"), "only the notch until there is something to say");
+
+// What is heard shows in the small line, so it is clear it is following.
+await emit("live-heard", { who: "Them", text: "so how was everyone's weekend" });
+assert.equal(await page.textContent("#top-line"), "Them: so how was everyone's weekend");
+
+// Small talk: the AI answers "." and nothing appears.
+let liveTurn = await page.evaluate(() => window.__fake.nextTurn());
+await emit("asked", { turn: liveTurn, text: "Them: so how was everyone's weekend", quiet: true });
+await emit("ai", { turn: liveTurn, kind: "delta", text: "." });
+assert.ok(await page.isHidden("#panel"));
+assert.equal(await notch("state"), "live");
+await emit("ai", { turn: liveTurn, kind: "done", text: "" });
+assert.ok(await page.isHidden("#panel"));
+assert.equal(await page.locator(".msg").count(), 0, "no trace of a check-in with nothing to say");
+
+// A real question: the notch grows with the answer, then keeps listening.
+liveTurn = await page.evaluate(() => window.__fake.nextTurn());
+await emit("live-heard", { who: "Them", text: "how would you do breadth-first search in Python?" });
+await emit("asked", { turn: liveTurn, text: "Them: how would you do breadth-first search in Python?", quiet: true });
+await emit("ai", { turn: liveTurn, kind: "delta", text: "Use a queue: visit a node, then enqueue its unvisited neighbours.\n\n```python\nfrom collections import deque\n\ndef bfs(graph, start):\n    seen, queue = {start}, deque([start])\n    while queue:\n        node = queue.popleft()\n        for n in graph[node]:\n            if n not in seen:\n                seen.add(n); queue.append(n)\n    return seen\n```" });
+await page.waitForSelector(".msg.ai pre");
+assert.equal(await notch("state"), "answering");
+assert.equal(await page.textContent("#top-line"), "Them: how would you do breadth-first search in Python?");
+await emit("ai", { turn: liveTurn, kind: "done", text: "" });
+assert.equal(await notch("state"), "live", "back to listening after answering");
+assert.ok(await page.isVisible("#actions"));
+await snap("9-live");
+
+// A later check-in with nothing to say leaves the last answer in place.
+liveTurn = await page.evaluate(() => window.__fake.nextTurn());
+await emit("asked", { turn: liveTurn, text: "Me: right, thanks", quiet: true });
+await emit("ai", { turn: liveTurn, kind: "delta", text: "." });
+await emit("ai", { turn: liveTurn, kind: "done", text: "" });
+assert.equal(await page.locator(".msg.ai").count(), 1);
+await emit("insert-request", null);
+assert.match((await calls("insert_text")).at(-1).text, /^Use a queue/);
+
+// "New" only clears the screen in live mode; the AI keeps its context.
+const chatsBefore = (await calls("new_chat")).length;
+await page.click("#new-chat");
+assert.ok(await page.isHidden("#panel"));
+assert.equal((await calls("new_chat")).length, chatsBefore);
+assert.equal(await notch("state"), "live");
+
+// Turning live mode off with nothing on screen hides the notch.
+const hidesBefore = (await calls("hide")).length;
+await emit("live", false);
+assert.equal((await calls("hide")).length, hidesBefore + 1);
+await wake(true);
+
 /* ----- settings ----- */
 
 await page.keyboard.press("Control+,");
@@ -224,6 +282,8 @@ await page.click('#settings button[type="submit"]');
 await page.waitForSelector("#settings", { state: "hidden" });
 const saved = (await calls("save_settings")).at(-1).settings;
 assert.equal(saved.shortcut, "Ctrl+Shift+K");
+assert.equal(saved.live_shortcut, "Ctrl+Alt+L");
+assert.equal(saved.live_system_audio, true);
 assert.equal(saved.provider, "codex");
 assert.equal(saved.voice_model, "tiny.en");
 assert.equal(saved.dock_edge, "bottom");

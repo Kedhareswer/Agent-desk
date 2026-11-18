@@ -38,6 +38,26 @@ from the screen: usually drafting a reply to the open message, or answering the 
 unknown, leave a short [placeholder].
 - Use Markdown only when it helps (code blocks for code, short lists). Plain text for drafts.";
 
+pub const LIVE_PROMPT: &str = "\
+You are Agent Desk in live mode. The user is working or in a conversation (a meeting, a call, a \
+lesson) and has asked you to follow along and help as it happens. You receive what was just said \
+and, now and then, a screenshot of their screen. Lines marked \"Me:\" come from the user's \
+microphone; lines marked \"Them:\" come from the computer's audio, meaning other people.
+
+Each time you receive new speech, decide whether there is something you can usefully help with \
+right now: a question that was asked, a problem being worked through, a term or fact that needs \
+explaining, a choice that needs a quick comparison.
+
+- If there is: help immediately. Lead with the answer in one or two sentences the user can use \
+straight away. Add a short code example or two to four bullets only when they are needed. No \
+preamble, no recap of what was said.
+- If there is not (small talk, half-finished thoughts, nothing new): reply with exactly one full \
+stop \".\" and nothing else.
+- Use everything heard and seen so far as context: project names, earlier decisions, what is on \
+screen. Do not repeat help you already gave.
+- Speech recognition makes mistakes. Read through them rather than commenting on them.
+- If the user speaks to you directly or types a question, just answer it.";
+
 /// One update sent to the overlay while an answer is produced.
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct AiEvent {
@@ -146,7 +166,7 @@ struct ClaudeProc {
     child: Child,
     stdin: ChildStdin,
     alive: Arc<AtomicBool>,
-    /// Model and path this process was started with.
+    /// Model, path and mode this process was started with.
     key: String,
 }
 
@@ -155,6 +175,7 @@ struct State {
     claude: Option<ClaudeProc>,
     codex_child: Option<Arc<Mutex<Child>>>,
     codex_thread: Option<String>,
+    codex_live: bool,
     last_used: Option<Instant>,
 }
 
@@ -174,6 +195,8 @@ pub struct Ask {
     pub claude_path: String,
     pub codex_model: String,
     pub codex_path: String,
+    /// Live mode uses its own instructions and its own conversation.
+    pub live: bool,
 }
 
 impl Engine {
@@ -195,11 +218,11 @@ impl Engine {
         dir
     }
 
-    fn spawn_claude(&self, model: &str, path: &str) -> Result<ClaudeProc, String> {
+    fn spawn_claude(&self, model: &str, path: &str, live: bool) -> Result<ClaudeProc, String> {
         let program = resolve_cli("claude", path)?;
         let workdir = self.workdir();
-        let prompt_file = self.data_dir.join("system-prompt.md");
-        std::fs::write(&prompt_file, SYSTEM_PROMPT).map_err(|e| e.to_string())?;
+        let prompt_file = self.data_dir.join(if live { "system-prompt-live.md" } else { "system-prompt.md" });
+        std::fs::write(&prompt_file, if live { LIVE_PROMPT } else { SYSTEM_PROMPT }).map_err(|e| e.to_string())?;
 
         let mut cmd = command(&program);
         cmd.current_dir(&workdir)
@@ -260,27 +283,27 @@ impl Engine {
             }
         });
 
-        Ok(ClaudeProc { child, stdin, alive, key: format!("{model}|{path}") })
+        Ok(ClaudeProc { child, stdin, alive, key: format!("{model}|{path}|{live}") })
     }
 
-    fn ensure_claude<'a>(&self, state: &'a mut State, model: &str, path: &str) -> Result<&'a mut ClaudeProc, String> {
-        let key = format!("{model}|{path}");
+    fn ensure_claude<'a>(&self, state: &'a mut State, model: &str, path: &str, live: bool) -> Result<&'a mut ClaudeProc, String> {
+        let key = format!("{model}|{path}|{live}");
         let usable = state.claude.as_ref().is_some_and(|c| c.alive.load(Ordering::SeqCst) && c.key == key);
         if !usable {
             kill_claude(state);
-            state.claude = Some(self.spawn_claude(model, path)?);
+            state.claude = Some(self.spawn_claude(model, path, live)?);
         }
         Ok(state.claude.as_mut().unwrap())
     }
 
     /// Start the Claude process ahead of the first question.
-    pub fn prewarm(&self, provider: &str, model: &str, path: &str) {
+    pub fn prewarm(&self, provider: &str, model: &str, path: &str, live: bool) {
         if provider != "claude" {
             return;
         }
         if let Ok(mut state) = self.state.lock() {
             state.last_used = Some(Instant::now());
-            let _ = self.ensure_claude(&mut state, model, path);
+            let _ = self.ensure_claude(&mut state, model, path, live);
         }
     }
 
@@ -309,7 +332,7 @@ impl Engine {
         // If the kept-alive process died in the meantime, start a new one
         // and send again.
         for attempt in 0..2 {
-            let proc = self.ensure_claude(state, &ask.claude_model, &ask.claude_path)?;
+            let proc = self.ensure_claude(state, &ask.claude_model, &ask.claude_path, ask.live)?;
             let sent = proc.stdin.write_all(line.as_bytes()).and_then(|_| proc.stdin.flush());
             match sent {
                 Ok(()) => return Ok(()),
@@ -326,6 +349,12 @@ impl Engine {
         let mut cmd = command(&program);
         cmd.current_dir(&workdir).arg("exec");
 
+        // Live mode and normal use are separate conversations.
+        if state.codex_live != ask.live {
+            state.codex_thread = None;
+            state.codex_live = ask.live;
+        }
+        let instructions = if ask.live { LIVE_PROMPT } else { SYSTEM_PROMPT };
         // A new conversation carries the instructions; a follow-up resumes
         // the stored thread.
         let prompt = match &state.codex_thread {
@@ -333,7 +362,7 @@ impl Engine {
                 cmd.args(["resume", id]);
                 ask.prompt.clone()
             }
-            None => format!("{SYSTEM_PROMPT}\n\n---\n\n{}", ask.prompt),
+            None => format!("{instructions}\n\n---\n\n{}", ask.prompt),
         };
         cmd.args(["--json", "--skip-git-repo-check", "-c", "sandbox_mode=read-only"]);
         if !ask.codex_model.trim().is_empty() {
@@ -395,6 +424,11 @@ impl Engine {
             }
         });
         Ok(())
+    }
+
+    /// Whether an answer is being produced right now.
+    pub fn is_busy(&self) -> bool {
+        self.busy.load(Ordering::SeqCst)
     }
 
     /// Stop the answer in progress.
@@ -523,6 +557,7 @@ mod tests {
             claude_path: String::new(),
             codex_model: String::new(),
             codex_path: String::new(),
+            live: false,
         };
         let collect = |turn: u64| {
             let mut text = String::new();
@@ -556,6 +591,65 @@ mod tests {
         let second = collect(t2);
         eprintln!("follow-up after {:?}: {second}", started.elapsed());
         assert!(second.to_lowercase().contains("marmalade"), "{second}");
+
+        engine.new_chat();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Live mode against the real Claude CLI: silence for small talk, help
+    /// for a real question, and memory of what was heard earlier.
+    ///   cargo test -- --ignored live_mode
+    #[test]
+    #[ignore]
+    fn live_mode_stays_quiet_until_there_is_something_to_help_with() {
+        use std::sync::mpsc;
+        let dir = std::env::temp_dir().join(format!("agent-desk-live-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let tx = Mutex::new(tx);
+        let engine = Engine::new(dir.clone(), Arc::new(move |e| tx.lock().unwrap().send(e).unwrap()));
+        let say = |text: &str| {
+            let turn = engine
+                .ask(Ask {
+                    prompt: text.into(),
+                    jpeg: None,
+                    provider: "claude".into(),
+                    claude_model: "haiku".into(),
+                    claude_path: String::new(),
+                    codex_model: String::new(),
+                    codex_path: String::new(),
+                    live: true,
+                })
+                .unwrap();
+            let started = Instant::now();
+            let mut out = String::new();
+            loop {
+                let e: AiEvent = rx.recv_timeout(std::time::Duration::from_secs(90)).expect("timed out");
+                assert_eq!(e.turn, turn);
+                match e.kind {
+                    "delta" => out.push_str(&e.text),
+                    "done" => break,
+                    _ => panic!("error from CLI: {}", e.text),
+                }
+            }
+            eprintln!("[{:?}] {text}\n    -> {out}", started.elapsed());
+            // The CLI finishes its own bookkeeping a moment after the text.
+            while engine.is_busy() {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            out
+        };
+
+        let small_talk = say("Them: Morning everyone, how was the weekend?\nMe: Good thanks, we went hiking.");
+        assert_eq!(small_talk.trim(), ".", "small talk should get no help");
+
+        let context = say("Them: So for the Orion project we agreed the backend stays in Java, right?\nMe: Yes, Java.");
+        assert!(context.trim() == "." || context.len() < 200, "{context}");
+
+        let question = say("Them: Can you sketch how you'd do a breadth-first search over our service graph?");
+        let lower = question.to_lowercase();
+        assert!(lower.contains("queue"), "{question}");
+        assert!(lower.contains("java"), "should use the language agreed earlier: {question}");
 
         engine.new_chat();
         let _ = std::fs::remove_dir_all(dir);
