@@ -71,7 +71,9 @@ const wake = (typing) => emit("wake", { title: "Inbox - Gmail", process: "chrome
 /* ----- start-up before the app is ready ----- */
 
 // Commands failed while the app was starting; the page keeps asking.
-await page.waitForFunction(() => window.__fake.calls.filter((c) => c[0] === "get_settings").length >= 2 && document.getElementById("notch").dataset.state === "idle");
+// Start-up has finished once the page asks for the status (the last step).
+await page.waitForFunction(() => window.__fake.calls.some((c) => c[0] === "status"));
+assert.ok((await calls("get_settings")).length >= 2, "settings were asked for again after failing");
 {
   const all = await page.evaluate(() => window.__fake.calls.map((c) => c[0]));
   const loaded = all.lastIndexOf("get_settings");
