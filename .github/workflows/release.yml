@@ -47,9 +47,15 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
+      # whisper.cpp's CMake cache stores the full MSVC path, which changes
+      # when GitHub updates the runner image, so the image is in the key.
+      - name: Runner image version
+        shell: bash
+        run: echo "IMAGE_VERSION=${ImageVersion:-unknown}" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          key: ${{ env.IMAGE_VERSION }}
       - run: npm ci
 
       - name: Check the tag matches the version files
