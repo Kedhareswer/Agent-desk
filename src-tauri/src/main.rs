@@ -17,7 +17,7 @@ use settings::Settings;
 use std::{
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
         Arc, Mutex,
     },
     time::{Duration, Instant},
@@ -80,6 +80,13 @@ struct App {
     speech: stt::Transcriber,
     /// Only one model download at a time.
     model_download: Mutex<()>,
+    /// Set while someone is waiting on the model download and wants to see
+    /// its progress. The download may have been started quietly (while the
+    /// user was still holding the keys), so the downloader checks this on
+    /// every tick instead of deciding once at the start.
+    show_download: AtomicBool,
+    /// Last download percentage, so a waiter can show it straight away.
+    download_pct: AtomicU8,
     snapshot: Mutex<Snapshot>,
     talk: Mutex<Option<Talk>>,
     talk_ids: AtomicU64,
@@ -213,16 +220,17 @@ fn place_overlay(app: &AppHandle) {
 /// The user let go of the overlay after dragging it: snap to the nearest edge.
 fn finish_drag(app: &AppHandle) {
     let Some(win) = overlay(app) else { return };
+    // Minimizing or hiding also moves the window (far off screen); that is
+    // not the user choosing a new place for it.
+    if win.is_minimized().unwrap_or(false) || !win.is_visible().unwrap_or(false) {
+        return;
+    }
     let state = app.state::<App>();
     let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) else {
         return;
     };
-    let screen = win
-        .current_monitor()
-        .ok()
-        .flatten()
-        .map(|m| to_screen(&m))
-        .or(*state.screen.lock().unwrap());
+    let screen = win.current_monitor().ok().flatten().map(|m| to_screen(&m));
+    // Off every monitor: not a drop the user made.
     let Some(screen) = screen else { return };
     *state.screen.lock().unwrap() = Some(screen);
     let grip = (NOTCH_HEIGHT * screen.scale) as i32;
@@ -295,6 +303,11 @@ fn show_overlay(app: &AppHandle, typing: bool, info: Option<WakeInfo>) {
         *state.screen.lock().unwrap() = screen_under_cursor(app, &win);
     }
     let _ = win.set_focusable(typing);
+    // "Show desktop" (Win + D) minimizes every window, the notch included.
+    // It has no taskbar button, so nothing else would ever bring it back.
+    if win.is_minimized().unwrap_or(false) {
+        let _ = win.unminimize();
+    }
     place_overlay(app);
     *state.shown_at.lock().unwrap() = Instant::now();
     let _ = win.show();
@@ -426,20 +439,33 @@ fn prepare_speech(app: &AppHandle, announce: bool) -> Result<(), String> {
     let state = app.state::<App>();
     let model = state.settings.lock().unwrap().voice_model.clone();
     if !stt::model_ready(&state.dir, &model) {
-        let _one_at_a_time = state
-            .model_download
-            .lock()
-            .map_err(|_| "download lock poisoned")?;
-        let app2 = app.clone();
-        stt::ensure_model(&state.dir, &model, &move |pct| {
-            if announce {
-                phase(
-                    &app2,
-                    "preparing",
-                    format!("Downloading speech model {pct}%"),
-                );
-            }
-        })?;
+        if announce {
+            state.show_download.store(true, Ordering::SeqCst);
+            let pct = state.download_pct.load(Ordering::SeqCst);
+            phase(app, "preparing", format!("Downloading speech model {pct}%"));
+        }
+        let result = (|| {
+            let _one_at_a_time = state
+                .model_download
+                .lock()
+                .map_err(|_| "download lock poisoned")?;
+            let app2 = app.clone();
+            stt::ensure_model(&state.dir, &model, &move |pct| {
+                let state = app2.state::<App>();
+                state.download_pct.store(pct, Ordering::SeqCst);
+                if state.show_download.load(Ordering::SeqCst) {
+                    phase(
+                        &app2,
+                        "preparing",
+                        format!("Downloading speech model {pct}%"),
+                    );
+                }
+            })
+        })();
+        if announce {
+            state.show_download.store(false, Ordering::SeqCst);
+        }
+        result?;
     }
     state.speech.load(&state.dir, &model)
 }
@@ -1110,6 +1136,8 @@ fn main() {
                 engine: Engine::new(dir.clone(), emit),
                 speech: stt::Transcriber::default(),
                 model_download: Mutex::new(()),
+                show_download: AtomicBool::new(false),
+                download_pct: AtomicU8::new(0),
                 dir: dir.clone(),
                 settings: Mutex::new(settings.clone()),
                 snapshot: Mutex::new(Snapshot::default()),

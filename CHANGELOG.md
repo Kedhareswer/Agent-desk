@@ -10,6 +10,16 @@ the release workflow uses that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+### Fixed
+
+- The notch could start broken: typing, Settings and window sizing did
+  nothing until the app was restarted. The interface now waits for the app
+  to finish starting.
+- The first time you talk, the notch now shows "Downloading speech model
+  N%" instead of sitting on "Transcribing" for minutes.
+- "Show desktop" (Win + D) no longer hides the notch for good or moves it
+  to the corner of the screen.
+
 ## [0.1.0] - 2026-11-19
 
 ### Added

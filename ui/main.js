@@ -533,7 +533,10 @@ function setWindow(w, h) {
   windowSize.h = h;
   el.shell.style.width = w + "px";
   el.shell.style.height = h + "px";
-  invoke("resize", { width: w, height: h });
+  invoke("resize", { width: w, height: h }).catch(() => {
+    // Not delivered: forget it so the next morph sends it again.
+    windowSize.w = windowSize.h = 0;
+  });
 }
 
 function morph() {
@@ -640,7 +643,19 @@ listen("settings-changed", ({ payload }) => {
 });
 
 (async function init() {
-  state.settings = await invoke("get_settings");
+  // The page can load before the app has finished starting, and then its
+  // commands fail. Keep asking until the app answers.
+  for (let wait = 50; ; wait = Math.min(wait * 2, 1000)) {
+    try {
+      state.settings = await invoke("get_settings");
+      break;
+    } catch {
+      await new Promise((r) => setTimeout(r, wait));
+    }
+  }
+  // A window size sent during start-up may have been lost the same way.
+  windowSize.w = windowSize.h = 0;
+  morph();
   buildMeter();
   applyLook();
   setPhase("idle", "");

@@ -25,10 +25,14 @@ const fake = () => {
   };
   const emit = (name, payload) => (listeners[name] || []).forEach((fn) => fn({ payload }));
   window.__fake = { calls, emit, cliFound: true, failAsk: null, nextTurn: () => ++turn };
+  // The real page can load before the app has finished starting, when every
+  // command fails. Start the same way.
+  let starting = 3;
   window.__TAURI__ = {
     core: {
       invoke: async (cmd, args) => {
         calls.push([cmd, args]);
+        if (starting > 0) { starting -= 1; throw "state not managed"; }
         if (cmd === "get_settings") return settings;
         if (cmd === "save_settings") { settings = args.settings; return { settings, warning: null }; }
         if (cmd === "status") return { provider: settings.provider, cli_found: window.__fake.cliFound, detail: window.__fake.cliFound ? "C:/claude.exe" : "The `claude` command was not found.", hook_supported: true, voice_model_ready: true };
@@ -63,6 +67,16 @@ const calls = (cmd) => page.evaluate((c) => window.__fake.calls.filter((x) => x[
 const emit = (name, payload) => page.evaluate(([n, p]) => window.__fake.emit(n, p), [name, payload]);
 const notch = (attr) => page.getAttribute("#notch", "data-" + attr);
 const wake = (typing) => emit("wake", { title: "Inbox - Gmail", process: "chrome.exe", has_screen: true, typing });
+
+/* ----- start-up before the app is ready ----- */
+
+// Commands failed while the app was starting; the page keeps asking.
+await page.waitForFunction(() => window.__fake.calls.filter((c) => c[0] === "get_settings").length >= 2 && document.getElementById("notch").dataset.state === "idle");
+{
+  const all = await page.evaluate(() => window.__fake.calls.map((c) => c[0]));
+  const loaded = all.lastIndexOf("get_settings");
+  assert.ok(all.indexOf("resize", loaded) > loaded, "the window size is sent again once the app is ready");
+}
 
 /* ----- voice: hold, speak, release ----- */
 
