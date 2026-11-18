@@ -1,0 +1,36 @@
+{
+  "version": "0.1.0",
+  "description": "Voice-first AI assistant that answers through your Claude or ChatGPT subscription.",
+  "homepage": "https://github.com/Kedhareswer/Agent-desk",
+  "license": "MIT",
+  "notes": [
+    "Agent Desk needs the Claude Code CLI (`claude`) or the Codex CLI (`codex`), signed in.",
+    "Start it from the Start menu or run `agent-desk`. Hold Ctrl + Alt and speak."
+  ],
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/Kedhareswer/Agent-desk/releases/download/v0.1.0/Agent-Desk_0.1.0_x64-portable.zip",
+      "hash": "fe2f66e097dac77b55eb7e8766cdecdd2e84b997e0fb8d09f7d75ba743ca4a54"
+    }
+  },
+  "bin": "agent-desk.exe",
+  "shortcuts": [
+    [
+      "agent-desk.exe",
+      "Agent Desk"
+    ]
+  ],
+  "checkver": {
+    "github": "https://github.com/Kedhareswer/Agent-desk"
+  },
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/Kedhareswer/Agent-desk/releases/download/v$version/Agent-Desk_$version_x64-portable.zip",
+        "hash": {
+          "url": "$baseurl/SHA256SUMS.txt"
+        }
+      }
+    }
+  }
+}
