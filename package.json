@@ -1,0 +1,15 @@
+{
+  "name": "agent-desk",
+  "private": true,
+  "version": "0.1.0",
+  "description": "A lightweight background AI assistant for Windows that reuses your Claude or Codex subscription.",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "test:ui": "node tests/ui.test.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.5"
+  }
+}

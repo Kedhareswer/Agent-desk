@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Desk</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="shell">
+  <div id="card">
+    <div id="bar">
+      <div id="orb" data-tauri-drag-region title="Drag to move"></div>
+      <textarea id="prompt" rows="1" placeholder="Ask anything, or press Enter to help with what's on screen" autofocus spellcheck="false"></textarea>
+      <button id="send" class="round" title="Send (Enter)" aria-label="Send">
+        <svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 19V5M5 12l7-7 7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button id="stop" class="round" title="Stop (Esc)" aria-label="Stop" hidden>
+        <svg viewBox="0 0 24 24" width="14" height="14"><rect x="6" y="6" width="12" height="12" rx="2.5" fill="currentColor"/></svg>
+      </button>
+    </div>
+
+    <div id="chips">
+      <button id="screen-chip" class="chip" title="Include a screenshot of your screen with the question"></button>
+      <button id="model-chip" class="chip" title="Switch model"></button>
+      <span class="spacer"></span>
+      <button id="new-chat" class="chip ghost" title="Start a new conversation (Ctrl+N)" hidden>New chat</button>
+      <button id="open-settings" class="chip ghost" title="Settings (Ctrl+,)" aria-label="Settings">Settings</button>
+    </div>
+
+    <div id="notice" hidden></div>
+
+    <div id="thread" hidden></div>
+
+    <div id="actions" hidden>
+      <button id="insert" class="primary" title="Paste the answer into the app you were using">Insert <kbd>Ctrl</kbd><kbd>↵</kbd></button>
+      <button id="copy">Copy <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>C</kbd></button>
+      <span class="spacer"></span>
+      <span id="hint">Esc to hide</span>
+    </div>
+
+    <form id="settings" hidden>
+      <h2>Settings</h2>
+      <label>Wake gesture
+        <select name="wake_mode">
+          <option value="ctrl_alt">Tap Ctrl + Alt together</option>
+          <option value="double_ctrl">Double-tap Ctrl</option>
+          <option value="shortcut">Keyboard shortcut only</option>
+        </select>
+      </label>
+      <label>Keyboard shortcut
+        <input name="shortcut" id="shortcut-input" placeholder="Click, then press keys" readonly>
+        <small>Always works alongside the wake gesture. Press Backspace to clear.</small>
+      </label>
+      <label>AI subscription
+        <select name="provider">
+          <option value="claude">Claude (uses Claude Code sign-in)</option>
+          <option value="codex">ChatGPT (uses Codex CLI sign-in)</option>
+        </select>
+      </label>
+      <label data-for="claude">Claude model
+        <select name="claude_model">
+          <option value="haiku">Haiku (fastest)</option>
+          <option value="sonnet">Sonnet (balanced)</option>
+          <option value="opus">Opus (most capable)</option>
+        </select>
+      </label>
+      <label data-for="codex">Codex model
+        <input name="codex_model" placeholder="Leave empty for your Codex default">
+      </label>
+      <label class="check"><input type="checkbox" name="include_screen"> Send a screenshot of my screen with each new question</label>
+      <label class="check"><input type="checkbox" name="hide_from_capture"> Hide this window from screen sharing and recordings</label>
+      <label class="check"><input type="checkbox" name="hide_on_blur"> Hide when I click elsewhere</label>
+      <label class="check"><input type="checkbox" name="autostart"> Start with Windows</label>
+      <label>Keep the AI ready for
+        <select name="keep_warm_minutes">
+          <option value="1">1 minute after use (least memory)</option>
+          <option value="5">5 minutes after use</option>
+          <option value="30">30 minutes after use (fastest)</option>
+        </select>
+      </label>
+      <details>
+        <summary>Advanced</summary>
+        <label>Path to claude <input name="claude_path" placeholder="Found automatically"></label>
+        <label>Path to codex <input name="codex_path" placeholder="Found automatically"></label>
+      </details>
+      <div id="settings-msg" hidden></div>
+      <div class="row">
+        <span class="spacer"></span>
+        <button type="button" id="settings-cancel">Cancel</button>
+        <button type="submit" class="primary">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+<script src="markdown.js"></script>
+<script src="main.js"></script>
+</body>
+</html>
