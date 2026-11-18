@@ -27,7 +27,7 @@ const STATES = {
 };
 const MODELS = { haiku: "Haiku", sonnet: "Sonnet", opus: "Opus" };
 const TEXT_FIELDS = ["wake_mode", "shortcut", "live_shortcut", "provider", "claude_model", "codex_model", "claude_path", "codex_path", "voice_model", "dock_edge"];
-const TOGGLES = ["include_screen", "hide_from_capture", "hide_on_blur", "autostart", "edge_glow", "live_system_audio"];
+const TOGGLES = ["include_screen", "hide_from_capture", "hide_on_blur", "autostart", "edge_glow", "live_system_audio", "auto_update"];
 const METER_COLUMNS = 10;
 
 const state = {
@@ -634,6 +634,7 @@ listen("live-heard", ({ payload }) => {
   if (state.live && state.phase === "live") el.topLine.textContent = `${payload.who}: ${payload.text}`;
 });
 listen("live-note", ({ payload }) => showNotice(payload));
+listen("notice", ({ payload }) => showNotice(payload));
 
 listen("insert-request", insertAnswer);
 listen("open-settings", openSettings);

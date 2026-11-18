@@ -21,7 +21,7 @@ const fake = () => {
     include_screen: true, hide_from_capture: true, hide_on_blur: false, autostart: false,
     claude_path: "", codex_path: "", keep_warm_minutes: 5,
     voice_model: "base.en", dock_edge: "top", dock_along: 0.5, opacity: 0.92, edge_glow: true,
-    live_shortcut: "Ctrl+Alt+L", live_system_audio: true,
+    live_shortcut: "Ctrl+Alt+L", live_system_audio: true, auto_update: true,
   };
   const emit = (name, payload) => (listeners[name] || []).forEach((fn) => fn({ payload }));
   window.__fake = { calls, emit, cliFound: true, failAsk: null, nextTurn: () => ++turn };
@@ -290,6 +290,8 @@ assert.ok(await page.isVisible('[name="codex_model"]'));
 await page.selectOption('[name="voice_model"]', "tiny.en");
 await page.selectOption('[name="dock_edge"]', "bottom");
 await page.uncheck('[name="hide_from_capture"]');
+assert.ok(await page.isChecked('[name="auto_update"]'), "update checks are on by default");
+await page.uncheck('[name="auto_update"]');
 // The transparency slider previews live and is saved.
 await page.fill('[name="opacity"]', "0.5");
 assert.equal(await page.textContent("#opacity-out"), "50% see-through");
@@ -306,8 +308,15 @@ assert.equal(saved.dock_edge, "bottom");
 assert.equal(saved.dock_along, 0.5);
 assert.equal(saved.opacity, 0.5);
 assert.equal(saved.hide_from_capture, false);
+assert.equal(saved.auto_update, false);
 assert.equal(saved.keep_warm_minutes, 5);
 assert.equal(await page.getAttribute("#shell", "data-edge"), "bottom");
+
+// Messages from the app (such as update results) appear in the notch.
+await emit("notice", "Agent Desk 0.1.2 is the latest version.");
+assert.match(await page.textContent("#notice"), /latest version/);
+await emit("notice", "");
+assert.ok(await page.isHidden("#notice"));
 
 // Cancelling settings undoes an unsaved transparency preview.
 await page.keyboard.press("Control+,");

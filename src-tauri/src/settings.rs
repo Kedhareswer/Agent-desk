@@ -41,6 +41,8 @@ pub struct Settings {
     /// In live mode, also listen to what the computer is playing (the other
     /// people in a call), not just the microphone.
     pub live_system_audio: bool,
+    /// Look for new versions in the background (installer copies only).
+    pub auto_update: bool,
 }
 
 impl Default for Settings {
@@ -70,6 +72,7 @@ impl Default for Settings {
             edge_glow: true,
             live_shortcut: "Ctrl+Alt+L".into(),
             live_system_audio: true,
+            auto_update: true,
         }
     }
 }

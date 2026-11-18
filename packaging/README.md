@@ -52,6 +52,19 @@ Each release then packs and pushes `agent-desk`. New packages go through
 Chocolatey's moderation, which can take a few days. Users install with
 `choco install agent-desk`.
 
+## In-app updates (one-time setup)
+
+Copies installed with the installer update themselves from the latest
+release. The release workflow needs the updater's private signing key:
+
+```bash
+gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.tauri/agent-desk.key
+```
+
+The matching public key is already in `src-tauri/tauri.conf.json`. Keep a
+backup of the private key: without it, installed copies cannot verify new
+versions.
+
 ## Notes
 
 - The installer is per-user (no admin prompt) and is not code signed, so

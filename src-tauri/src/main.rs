@@ -8,6 +8,7 @@ mod hotkey;
 mod platform;
 mod settings;
 mod stt;
+mod update;
 
 use backend::{AiEvent, Ask, Engine};
 use dock::Rect;
@@ -102,6 +103,8 @@ struct App {
     capture_item: Mutex<Option<CheckMenuItem<tauri::Wry>>>,
     live: Mutex<Option<LiveSession>>,
     live_item: Mutex<Option<CheckMenuItem<tauri::Wry>>>,
+    updates: update::Updates,
+    update_item: Mutex<Option<MenuItem<tauri::Wry>>>,
 }
 
 #[derive(Serialize, Clone)]
@@ -949,6 +952,76 @@ fn insert_text(app: AppHandle, state: State<App>, text: String) -> Result<(), St
     Ok(())
 }
 
+/* ---------- updates ---------- */
+
+/// Open the notch and show a short message in it.
+fn tell(app: &AppHandle, text: impl Into<String>) {
+    let info = capture_context(app);
+    show_overlay(app, true, info);
+    let _ = app.emit_to("main", "notice", text.into());
+}
+
+/// Show in the tray that a downloaded update is waiting.
+fn mark_update_ready(app: &AppHandle, version: &str) {
+    if let Some(item) = app.state::<App>().update_item.lock().unwrap().as_ref() {
+        let _ = item.set_text(format!("Restart to update to {version}"));
+    }
+    if let Some(tray) = app.tray_by_id("tray") {
+        let _ = tray.set_tooltip(Some(format!("Agent Desk – version {version} is ready")));
+    }
+}
+
+/// The tray's update item: install what is waiting, or check now.
+fn update_clicked(app: &AppHandle) {
+    let state = app.state::<App>();
+    let channel = update::channel();
+    if channel != update::Channel::Installer {
+        tell(app, update::manual_hint(channel));
+        return;
+    }
+    if update::ready_version(&state.updates).is_none() {
+        tell(app, "Checking for updates…");
+        match update::check(app, &state.updates) {
+            Ok(None) => {
+                let current = app.package_info().version.to_string();
+                tell(app, format!("Agent Desk {current} is the latest version."));
+                return;
+            }
+            Ok(Some(version)) => mark_update_ready(app, &version),
+            Err(e) => {
+                tell(app, e);
+                return;
+            }
+        }
+    }
+    // Close the AI process cleanly; the installer closes the app and opens
+    // the new version when it is done.
+    state.engine.stop();
+    if let Err(e) = update::install(&state.updates) {
+        tell(app, e);
+    }
+}
+
+/// Check for updates now and then, if the user allows it.
+fn watch_for_updates(app: AppHandle) {
+    if update::channel() != update::Channel::Installer {
+        return;
+    }
+    std::thread::spawn(move || {
+        std::thread::sleep(update::FIRST_CHECK);
+        loop {
+            let state = app.state::<App>();
+            let allowed = state.settings.lock().unwrap().auto_update;
+            if allowed {
+                if let Ok(Some(version)) = update::check(&app, &state.updates) {
+                    mark_update_ready(&app, &version);
+                }
+            }
+            std::thread::sleep(update::EVERY);
+        }
+    });
+}
+
 fn build_tray(app: &AppHandle, hide_from_capture: bool) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open Agent Desk", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
@@ -968,6 +1041,7 @@ fn build_tray(app: &AppHandle, hide_from_capture: bool) -> tauri::Result<()> {
         hide_from_capture,
         None::<&str>,
     )?;
+    let update_item = MenuItem::with_id(app, "update", "Check for updates…", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
@@ -977,11 +1051,13 @@ fn build_tray(app: &AppHandle, hide_from_capture: bool) -> tauri::Result<()> {
             &settings,
             &capture,
             &PredefinedMenuItem::separator(app)?,
+            &update_item,
             &quit,
         ],
     )?;
     *app.state::<App>().capture_item.lock().unwrap() = Some(capture);
     *app.state::<App>().live_item.lock().unwrap() = Some(live);
+    *app.state::<App>().update_item.lock().unwrap() = Some(update_item);
 
     let open_typing = |app: &AppHandle| {
         let info = capture_context(app);
@@ -1019,6 +1095,10 @@ fn build_tray(app: &AppHandle, hide_from_capture: bool) -> tauri::Result<()> {
                 }
                 let _ = app.emit("settings-changed", updated);
             }
+            "update" => {
+                let app = app.clone();
+                std::thread::spawn(move || update_clicked(&app));
+            }
             "quit" => {
                 app.state::<App>().engine.stop();
                 app.exit(0);
@@ -1048,6 +1128,7 @@ fn main() {
             let info = capture_context(app);
             show_overlay(app, true, info);
         }))
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -1152,9 +1233,12 @@ fn main() {
                 capture_item: Mutex::new(None),
                 live: Mutex::new(None),
                 live_item: Mutex::new(None),
+                updates: update::Updates::default(),
+                update_item: Mutex::new(None),
             });
 
             build_tray(&handle, settings.hide_from_capture)?;
+            watch_for_updates(handle.clone());
 
             // Gestures arrive on the keyboard hook thread, which must return
             // at once, so the work moves to its own thread.

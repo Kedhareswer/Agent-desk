@@ -21,6 +21,7 @@ arboard = { version = "3", default-features = false }
 which = "8"
 whisper-rs = "0.16"
 cpal = "0.18"
+tauri-plugin-updater = "2"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [

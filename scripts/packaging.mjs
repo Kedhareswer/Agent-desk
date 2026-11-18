@@ -6,7 +6,9 @@
 // <dist-dir> must contain the two release files:
 //   Agent-Desk_<version>_x64-setup.exe     NSIS installer (winget, Chocolatey)
 //   Agent-Desk_<version>_x64-portable.zip  the bare exe (Scoop)
-// Output goes to <dist-dir>/packaging/.
+// If the installer was signed for the in-app updater, its signature
+// (<setup>.sig) is there too, and latest.json is written for the updater.
+// Output goes to <dist-dir>/packaging/ (and latest.json to <dist-dir>).
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -169,6 +171,18 @@ foreach ($key in $keys) {
   };
 }
 
+/** The manifest the in-app updater reads from the latest release. */
+export function latest({ version, repo, notes, signature }) {
+  const entry = { signature, url: `${repo}/releases/download/v${version}/${files(version).setup}` };
+  return {
+    version,
+    notes,
+    pub_date: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+    // The updater looks for "<os>-<arch>-<installer>" first, then "<os>-<arch>".
+    platforms: { "windows-x86_64-nsis": entry, "windows-x86_64": entry },
+  };
+}
+
 export function build(version, dist) {
   const repo = repoUrl();
   const names = files(version);
@@ -187,6 +201,13 @@ export function build(version, dist) {
   ];
   for (const [f, text] of Object.entries(wingetManifests(ctx))) written.push(out(pkg, `winget/${f}`, text));
   for (const [f, text] of Object.entries(chocolatey(ctx))) written.push(out(pkg, `chocolatey/${f}`, text));
+  const sig = path.join(dist, names.setup + ".sig");
+  if (fs.existsSync(sig)) {
+    const notesFile = path.join(dist, "NOTES.md");
+    const notes = fs.existsSync(notesFile) ? fs.readFileSync(notesFile, "utf8").trim() : "";
+    const signature = fs.readFileSync(sig, "utf8").trim();
+    written.push(out(dist, "latest.json", JSON.stringify(latest({ version, repo, notes, signature }), null, 2) + "\n"));
+  }
   // Chocolatey wants the licence inside the package next to the scripts.
   written.push(out(pkg, "chocolatey/tools/LICENSE.txt", fs.readFileSync(path.join(root, "LICENSE"), "utf8")));
   return written;

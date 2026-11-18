@@ -10,6 +10,14 @@ the release workflow uses that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+### Added
+
+- Automatic updates for copies installed with the installer: Agent Desk
+  checks GitHub Releases in the background, downloads and verifies a new
+  version, and the tray offers "Restart to update". Turn it off in
+  Settings. Scoop, winget, Chocolatey and portable copies keep updating
+  through their own tool, and the tray says how.
+
 ## [0.1.1] - 2026-11-19
 
 ### Fixed

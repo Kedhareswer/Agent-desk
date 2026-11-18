@@ -70,8 +70,21 @@ jobs:
       - name: Unit tests
         run: cargo test --manifest-path src-tauri/Cargo.toml --locked
 
+      # With the signing key (repository secret TAURI_SIGNING_PRIVATE_KEY)
+      # the installer is signed and the in-app updater can install it.
+      # Without it the release still works, just without in-app updates.
       - name: Build installer
-        run: npx tauri build
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            npx tauri build --config '{"bundle":{"createUpdaterArtifacts":true}}'
+          else
+            echo "::warning::TAURI_SIGNING_PRIVATE_KEY is not set; this release will not update itself in the app."
+            npx tauri build
+          fi
 
       - name: Collect release files
         shell: pwsh
@@ -82,10 +95,13 @@ jobs:
           $setup = Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
           if (-not $setup) { throw "No NSIS installer was built." }
           Copy-Item $setup.FullName "dist/Agent-Desk_${env:VERSION}_x64-setup.exe"
+          if (Test-Path "$($setup.FullName).sig") {
+            Copy-Item "$($setup.FullName).sig" "dist/Agent-Desk_${env:VERSION}_x64-setup.exe.sig"
+          }
           Compress-Archive -Path src-tauri/target/release/agent-desk.exe, LICENSE, README.md `
             -DestinationPath "dist/Agent-Desk_${env:VERSION}_x64-portable.zip"
-          node scripts/packaging.mjs $env:VERSION dist
           node scripts/version.mjs --notes $env:VERSION | Out-File -Encoding utf8 dist/NOTES.md
+          node scripts/packaging.mjs $env:VERSION dist
           Get-ChildItem -Recurse dist | Select-Object FullName, Length
 
       - uses: actions/upload-artifact@v7
@@ -118,6 +134,8 @@ jobs:
           fi
           [ "$PRERELEASE" = "true" ] && args+=(--prerelease)
           files=(dist/*.exe dist/*.zip dist/SHA256SUMS.txt)
+          # The in-app updater reads latest.json from the latest release.
+          [ -f dist/latest.json ] && files+=(dist/latest.json dist/*.sig)
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" "${files[@]}" --clobber --repo "$GITHUB_REPOSITORY"
           else

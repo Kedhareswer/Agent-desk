@@ -56,6 +56,8 @@ src-tauri/                  Rust (Tauri 2) – all system work
                             force-foreground, paste (Ctrl+V via SendInput)
   src/dock.rs               Pure maths for docking to a screen edge
   src/settings.rs           Settings struct, JSON in the app config dir
+  src/update.rs             In-app updater (installer copies only), channel
+                            detection (installer / Scoop / manual)
   cross/                    Linux → Windows cross-build script and MinGW shim
   tauri.conf.json           Two windows: "main" (notch) and "glow"
 ui/                         Plain HTML/CSS/JS – no framework, no build step
@@ -218,6 +220,23 @@ ids, description) is the `ID` block in `scripts/packaging.mjs`.
 
 CI fails on `clippy::correctness` and `clippy::suspicious` only; other
 lints are warnings.
+
+### In-app updates
+
+`tauri-plugin-updater` reads `latest.json` from the latest GitHub Release
+(`plugins.updater` in `tauri.conf.json`, which holds the public key). Only
+copies installed by our NSIS installer update themselves (`update::channel`
+looks for `uninstall.exe` next to the exe); Scoop, winget, Chocolatey and
+the zip are left to their own tools so two updaters never fight. Updates are
+downloaded in the background but installed only when the user picks
+"Restart to update" in the tray, because installing closes the app.
+
+The release workflow signs the installer when the repository secret
+`TAURI_SIGNING_PRIVATE_KEY` is set (private key kept outside the repo; the
+matching public key is in `tauri.conf.json`) and then uploads `latest.json`
+and the `.sig`. Without the secret the release still works but does not
+offer itself to the updater. Losing the private key means existing installs
+can no longer verify updates, so keep a backup of it.
 
 Ignored tests that need real resources:
 
