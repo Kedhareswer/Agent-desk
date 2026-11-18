@@ -6,7 +6,7 @@ use std::{fs, path::PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Settings {
-    /// "shortcut" | "ctrl_alt" | "double_ctrl". The last two need the
+    /// "shortcut" | "ctrl_alt" (hold to talk, tap to type) | "double_ctrl". The last two need the
     /// Windows keyboard hook; the shortcut below always works as well.
     pub wake_mode: String,
     /// Accelerator such as "Ctrl+Alt+Space". Empty disables it.
@@ -27,6 +27,15 @@ pub struct Settings {
     pub codex_path: String,
     /// How long an idle Claude session stays in memory before it is closed.
     pub keep_warm_minutes: u32,
+    /// Speech model: "tiny.en", "base.en", "small.en", "base" or "small".
+    pub voice_model: String,
+    /// Screen edge the overlay is docked to, and how far along it (0 to 1).
+    pub dock_edge: crate::dock::Edge,
+    pub dock_along: f64,
+    /// How solid the overlay background is, from 0.3 (see-through) to 1.0.
+    pub opacity: f64,
+    /// Show a soft glow around the screen while listening.
+    pub edge_glow: bool,
 }
 
 impl Default for Settings {
@@ -39,11 +48,16 @@ impl Default for Settings {
             codex_model: String::new(),
             include_screen: true,
             hide_from_capture: true,
-            hide_on_blur: true,
+            hide_on_blur: false,
             autostart: false,
             claude_path: String::new(),
             codex_path: String::new(),
             keep_warm_minutes: 5,
+            voice_model: "base.en".into(),
+            dock_edge: crate::dock::Edge::Top,
+            dock_along: 0.5,
+            opacity: 0.92,
+            edge_glow: true,
         }
     }
 }

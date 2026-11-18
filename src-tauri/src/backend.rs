@@ -132,6 +132,7 @@ pub fn resolve_cli(name: &str, explicit: &str) -> Result<PathBuf, String> {
 }
 
 fn command(program: &PathBuf) -> Command {
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut cmd = Command::new(program);
     #[cfg(windows)]
     {

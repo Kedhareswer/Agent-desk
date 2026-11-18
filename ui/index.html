@@ -9,125 +9,136 @@
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
   <defs>
-    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></symbol>
-    <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M3 3l18 18M10.6 6.1A9.6 9.6 0 0 1 12 6c6.4 0 10 6 10 6a17 17 0 0 1-3.2 3.9M6.5 7.6A17 17 0 0 0 2 12s3.6 6 10 6a9.7 9.7 0 0 0 4-.9M9.9 9.9a3 3 0 0 0 4.2 4.2"/></symbol>
-    <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/></symbol>
-    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
     <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></symbol>
-    <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></symbol>
     <symbol id="i-insert" viewBox="0 0 24 24"><path d="M9 10 4 15l5 5"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/></symbol>
     <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2.5"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></symbol>
-    <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01M10.3 3.9 2.4 17.5A2 2 0 0 0 4.1 20.5h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
   </defs>
 </svg>
 
-<div id="shell">
-  <div id="card">
-    <div id="inner">
-      <div id="bar">
-        <div id="orb" data-tauri-drag-region title="Drag to move"></div>
-        <textarea id="prompt" rows="1" placeholder="Ask anything, or press Enter to help with what's on screen" autofocus spellcheck="false"></textarea>
-        <button id="send" class="round" title="Send (Enter)" aria-label="Send"><svg class="icon"><use href="#i-up"/></svg></button>
-        <button id="stop" class="round" title="Stop (Esc)" aria-label="Stop" hidden><span class="square"></span></button>
-      </div>
-
-      <div id="meta">
-        <button id="screen-chip" class="chip" title="Include a screenshot of your screen with the question"><svg class="icon"><use href="#i-eye"/></svg><span></span></button>
-        <button id="model-chip" class="chip" title="Switch model"><svg class="icon"><use href="#i-bolt"/></svg><span></span></button>
-        <span class="spacer"></span>
-        <button id="new-chat" class="icon-btn" title="New conversation (Ctrl+N)" aria-label="New conversation" hidden><svg class="icon"><use href="#i-plus"/></svg></button>
-        <button id="open-settings" class="icon-btn" title="Settings (Ctrl+,)" aria-label="Settings"><svg class="icon"><use href="#i-gear"/></svg></button>
-      </div>
-
-      <div id="suggest" role="group" aria-label="Quick actions">
-        <button data-prompt="Draft a reply to the message on my screen.">Draft a reply</button>
-        <button data-prompt="Summarize what is on my screen in a few short bullet points.">Summarize</button>
-        <button data-prompt="Explain what is on my screen in simple terms.">Explain this</button>
-        <button data-prompt="Improve the text I am writing on screen: fix grammar and clarity and keep my tone. Output only the improved text.">Fix my writing</button>
-        <button data-prompt="What should I do next here? Give short, concrete steps.">What next?</button>
-      </div>
-
-      <div id="notice" hidden><svg class="icon"><use href="#i-warn"/></svg><span></span></div>
-
-      <div id="thread" hidden></div>
-
-      <div id="actions" hidden>
-        <button id="insert" class="primary" title="Paste the answer into the app you were using"><svg class="icon"><use href="#i-insert"/></svg>Insert</button>
-        <button id="copy"><svg class="icon"><use href="#i-copy"/></svg><span>Copy</span></button>
-        <span class="spacer"></span>
-        <span id="stat"></span>
-      </div>
-
-      <form id="settings" hidden>
-        <section>
-          <h3>Wake</h3>
-          <label>Gesture
-            <select name="wake_mode">
-              <option value="ctrl_alt">Tap Ctrl + Alt together</option>
-              <option value="double_ctrl">Double-tap Ctrl</option>
-              <option value="shortcut">Keyboard shortcut only</option>
-            </select>
-          </label>
-          <label>Keyboard shortcut
-            <input name="shortcut" id="shortcut-input" placeholder="Click, then press keys" readonly>
-            <small>Works alongside the gesture. Backspace clears it.</small>
-          </label>
-        </section>
-        <section>
-          <h3>AI</h3>
-          <label>Subscription
-            <select name="provider">
-              <option value="claude">Claude (Claude Code sign-in)</option>
-              <option value="codex">ChatGPT (Codex CLI sign-in)</option>
-            </select>
-          </label>
-          <label data-for="claude">Model
-            <select name="claude_model">
-              <option value="haiku">Haiku (fastest)</option>
-              <option value="sonnet">Sonnet (balanced)</option>
-              <option value="opus">Opus (most capable)</option>
-            </select>
-          </label>
-          <label data-for="codex">Model
-            <input name="codex_model" placeholder="Your Codex default">
-          </label>
-          <label>Keep ready after use
-            <select name="keep_warm_minutes">
-              <option value="1">1 minute (least memory)</option>
-              <option value="5">5 minutes</option>
-              <option value="30">30 minutes (fastest)</option>
-            </select>
-          </label>
-        </section>
-        <section class="wide">
-          <h3>Behaviour</h3>
-          <label class="switch"><input type="checkbox" name="include_screen"><span>Send a screenshot of my screen with each new question</span></label>
-          <label class="switch"><input type="checkbox" name="hide_from_capture"><span>Hide this window from screen sharing and recordings</span></label>
-          <label class="switch"><input type="checkbox" name="hide_on_blur"><span>Hide when I click elsewhere</span></label>
-          <label class="switch"><input type="checkbox" name="autostart"><span>Start with Windows</span></label>
-        </section>
-        <details class="wide">
-          <summary>Advanced</summary>
-          <div class="two">
-            <label>Path to claude <input name="claude_path" placeholder="Found automatically"></label>
-            <label>Path to codex <input name="codex_path" placeholder="Found automatically"></label>
+<div id="shell" data-edge="top">
+  <!-- One shape. Collapsed it is a notch on the screen edge; when there is
+       something to read it grows into the answer. -->
+  <div id="notch" data-state="idle">
+    <div id="clip">
+      <div id="content">
+        <div id="head">
+        <div id="grip" data-tauri-drag-region title="Drag to another screen edge"></div>
+        <div id="top-line"></div>
+        <div id="row">
+          <div id="pixel" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
+          <div id="label" role="status"></div>
+          <textarea id="prompt" rows="1" placeholder="Type, or hold Ctrl + Alt and talk" spellcheck="false"></textarea>
+          <svg id="mic" class="icon" aria-hidden="true"><use href="#i-mic"/></svg>
+          <div id="meter" aria-hidden="true"></div>
+          <button id="stop" title="Stop (Esc)" aria-label="Stop" hidden><span></span></button>
+          <div id="tools">
+            <button id="open-settings" title="Settings (Ctrl+,)" aria-label="Settings"><svg class="icon"><use href="#i-gear"/></svg></button>
+            <button id="close" title="Hide (Esc)" aria-label="Hide"><svg class="icon"><use href="#i-x"/></svg></button>
           </div>
-        </details>
-        <div id="settings-msg" class="wide" hidden></div>
-        <div class="row wide">
-          <span class="spacer"></span>
-          <button type="button" id="settings-cancel">Cancel</button>
-          <button type="submit" class="primary">Save</button>
         </div>
-      </form>
+        </div>
+        <div id="panel" hidden>
+          <div id="notice" hidden></div>
+          <div id="thread" hidden></div>
+          <div id="actions" hidden>
+            <button id="insert" title="Paste the answer into the app you were using (Ctrl+Alt+Enter)"><svg class="icon"><use href="#i-insert"/></svg>Insert</button>
+            <button id="copy" title="Copy the answer (Ctrl+Shift+C)"><svg class="icon"><use href="#i-copy"/></svg>Copy</button>
+            <button id="new-chat" title="New conversation (Ctrl+N)"><svg class="icon"><use href="#i-plus"/></svg>New</button>
+            <span class="spacer"></span>
+            <span id="stat"></span>
+          </div>
 
-      <div id="foot">
-        <span><kbd>↵</kbd> Ask</span>
-        <span id="foot-insert" hidden><kbd>Ctrl</kbd><kbd>↵</kbd> Insert</span>
-        <span id="foot-copy" hidden><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>C</kbd> Copy</span>
-        <span class="spacer"></span>
-        <span id="toast" role="status"></span>
-        <span><kbd>Esc</kbd> <span id="esc-label">Hide</span></span>
+          <form id="settings" hidden>
+            <section>
+              <h3>Voice and wake</h3>
+              <label>Wake keys
+                <select name="wake_mode">
+                  <option value="ctrl_alt">Hold Ctrl + Alt to talk, tap to type</option>
+                  <option value="double_ctrl">Double-tap Ctrl to type</option>
+                  <option value="shortcut">Shortcut only</option>
+                </select>
+              </label>
+              <label>Shortcut (hold to talk, tap to type)
+                <input name="shortcut" id="shortcut-input" placeholder="Click, then press keys" readonly>
+              </label>
+              <label>Speech model
+                <select name="voice_model">
+                  <option value="tiny.en">Tiny, English (75 MB, fastest)</option>
+                  <option value="base.en">Base, English (148 MB)</option>
+                  <option value="small.en">Small, English (488 MB, most accurate)</option>
+                  <option value="base">Base, any language (148 MB)</option>
+                  <option value="small">Small, any language (488 MB)</option>
+                </select>
+                <small>Runs on this computer. Downloaded the first time you talk.</small>
+              </label>
+            </section>
+            <section>
+              <h3>AI</h3>
+              <label>Subscription
+                <select name="provider">
+                  <option value="claude">Claude (Claude Code sign-in)</option>
+                  <option value="codex">ChatGPT (Codex CLI sign-in)</option>
+                </select>
+              </label>
+              <label data-for="claude">Model
+                <select name="claude_model">
+                  <option value="haiku">Haiku (fastest)</option>
+                  <option value="sonnet">Sonnet (balanced)</option>
+                  <option value="opus">Opus (most capable)</option>
+                </select>
+              </label>
+              <label data-for="codex">Model
+                <input name="codex_model" placeholder="Your Codex default">
+              </label>
+              <label>Keep ready after use
+                <select name="keep_warm_minutes">
+                  <option value="1">1 minute (least memory)</option>
+                  <option value="5">5 minutes</option>
+                  <option value="30">30 minutes (fastest)</option>
+                </select>
+              </label>
+            </section>
+            <section>
+              <h3>Look</h3>
+              <label>Position
+                <select name="dock_edge">
+                  <option value="top">Top of the screen</option>
+                  <option value="bottom">Bottom of the screen</option>
+                  <option value="left">Left side</option>
+                  <option value="right">Right side</option>
+                </select>
+                <small>Or drag the notch by its top strip.</small>
+              </label>
+              <label>Transparency <output id="opacity-out"></output>
+                <input type="range" name="opacity" min="0.3" max="1" step="0.05">
+              </label>
+            </section>
+            <section>
+              <h3>Behaviour</h3>
+              <label class="switch"><input type="checkbox" name="edge_glow"><span>Glow around the screen while listening</span></label>
+              <label class="switch"><input type="checkbox" name="include_screen"><span>Send a screenshot with each new question</span></label>
+              <label class="switch"><input type="checkbox" name="hide_from_capture"><span>Hide from screen sharing</span></label>
+              <label class="switch"><input type="checkbox" name="hide_on_blur"><span>Hide when I click elsewhere</span></label>
+              <label class="switch"><input type="checkbox" name="autostart"><span>Start with Windows</span></label>
+            </section>
+            <details class="wide">
+              <summary>Advanced</summary>
+              <div class="two">
+                <label>Path to claude <input name="claude_path" placeholder="Found automatically"></label>
+                <label>Path to codex <input name="codex_path" placeholder="Found automatically"></label>
+              </div>
+            </details>
+            <div id="settings-msg" class="wide" hidden></div>
+            <div class="row wide">
+              <span class="spacer"></span>
+              <button type="button" id="settings-cancel">Cancel</button>
+              <button type="submit" class="primary">Save</button>
+            </div>
+          </form>
+        </div>
       </div>
     </div>
   </div>

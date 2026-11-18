@@ -1,44 +1,87 @@
 // Agent Desk: a small always-available AI overlay for the desktop.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod audio;
 mod backend;
+mod dock;
 mod hotkey;
 mod platform;
 mod settings;
+mod stt;
 
 use backend::{AiEvent, Ask, Engine};
+use dock::Rect;
+use hotkey::Gesture;
 use serde::Serialize;
 use settings::Settings;
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, Instant},
 };
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, State, WebviewWindow, WindowEvent,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, State, WebviewWindow, WindowEvent,
 };
 use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt as _, Shortcut, ShortcutState};
 
-const OVERLAY_WIDTH: f64 = 720.0;
+/// Height of the notch in logical pixels: the part that stays put on a side
+/// edge while the answer panel grows below it.
+const NOTCH_HEIGHT: f64 = 58.0;
+const MAX_WIDTH: f64 = 640.0;
 const MAX_HEIGHT: f64 = 640.0;
 /// Long edge of the screenshot sent to the model.
 const SHOT_MAX_EDGE: u32 = 1568;
+/// Holding the wake keys for less than this is a tap (open to type);
+/// longer is speech.
+const TAP_MS: u64 = 280;
+/// Pastes the latest answer into the app in front, without touching the overlay.
+const INSERT_SHORTCUT: &str = "Ctrl+Alt+Enter";
 
-/// What was on screen when the overlay was opened.
+/// What was on screen when the assistant was called.
 #[derive(Default)]
 struct Snapshot {
     foreground: platform::Foreground,
     shot: Option<platform::RawImage>,
 }
 
+/// A push-to-talk recording in progress.
+struct Talk {
+    id: u64,
+    recording: audio::Recording,
+}
+
+/// The screen the overlay is on: its usable area, full bounds and scale.
+#[derive(Clone, Copy)]
+struct Screen {
+    work: Rect,
+    full: Rect,
+    scale: f64,
+}
+
 struct App {
     dir: PathBuf,
     settings: Mutex<Settings>,
     engine: Engine,
+    speech: stt::Transcriber,
+    /// Only one model download at a time.
+    model_download: Mutex<()>,
     snapshot: Mutex<Snapshot>,
+    talk: Mutex<Option<Talk>>,
+    talk_ids: AtomicU64,
+    shortcut_down: Mutex<Option<Instant>>,
+    screen: Mutex<Option<Screen>>,
+    /// Overlay size last requested by the interface, in logical pixels.
+    size: Mutex<(f64, f64)>,
+    /// Where the overlay was last put by the app itself, to tell the app's
+    /// own moves from the user dragging it.
+    placed: Mutex<(i32, i32)>,
+    moves: AtomicU64,
     shown_at: Mutex<Instant>,
     capture_item: Mutex<Option<CheckMenuItem<tauri::Wry>>>,
 }
@@ -48,6 +91,21 @@ struct WakeInfo {
     title: String,
     process: String,
     has_screen: bool,
+    /// True when the overlay has keyboard focus (opened to type).
+    typing: bool,
+}
+
+#[derive(Serialize, Clone)]
+struct Phase {
+    /// "listening" | "transcribing" | "preparing" | "cancelled" | "error"
+    phase: &'static str,
+    text: String,
+}
+
+#[derive(Serialize, Clone)]
+struct Asked {
+    turn: u64,
+    text: String,
 }
 
 fn overlay(app: &AppHandle) -> Option<WebviewWindow> {
@@ -65,59 +123,144 @@ fn own_hwnd(_win: &WebviewWindow) -> isize {
     }
 }
 
+fn phase(app: &AppHandle, phase: &'static str, text: impl Into<String>) {
+    let _ = app.emit_to("main", "phase", Phase { phase, text: text.into() });
+}
+
+/* ---------- placing the overlay ---------- */
+
+fn screen_under_cursor(app: &AppHandle, win: &WebviewWindow) -> Option<Screen> {
+    let monitor = app
+        .cursor_position()
+        .ok()
+        .and_then(|p| app.monitor_from_point(p.x, p.y).ok().flatten())
+        .or_else(|| win.primary_monitor().ok().flatten())?;
+    Some(to_screen(&monitor))
+}
+
+fn to_screen(m: &tauri::Monitor) -> Screen {
+    let area = m.work_area();
+    Screen {
+        work: Rect { x: area.position.x, y: area.position.y, w: area.size.width as i32, h: area.size.height as i32 },
+        full: Rect { x: m.position().x, y: m.position().y, w: m.size().width as i32, h: m.size().height as i32 },
+        scale: m.scale_factor(),
+    }
+}
+
+/// Size the overlay to what the interface asked for and dock it.
+fn place_overlay(app: &AppHandle) {
+    let Some(win) = overlay(app) else { return };
+    let state = app.state::<App>();
+    let Some(screen) = *state.screen.lock().unwrap() else { return };
+    let (w, h) = *state.size.lock().unwrap();
+    let (edge, along) = {
+        let s = state.settings.lock().unwrap();
+        (s.dock_edge, s.dock_along)
+    };
+    let size = ((w * screen.scale).round() as i32, (h * screen.scale).round() as i32);
+    let grip = (NOTCH_HEIGHT * screen.scale) as i32;
+    let (x, y) = dock::place(edge, along, size, screen.work, grip);
+    *state.placed.lock().unwrap() = (x, y);
+    let _ = win.set_size(LogicalSize::new(w, h));
+    let _ = win.set_position(PhysicalPosition::new(x, y));
+}
+
+/// The user let go of the overlay after dragging it: snap to the nearest edge.
+fn finish_drag(app: &AppHandle) {
+    let Some(win) = overlay(app) else { return };
+    let state = app.state::<App>();
+    let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) else { return };
+    let screen = win.current_monitor().ok().flatten().map(|m| to_screen(&m)).or(*state.screen.lock().unwrap());
+    let Some(screen) = screen else { return };
+    *state.screen.lock().unwrap() = Some(screen);
+    let grip = (NOTCH_HEIGHT * screen.scale) as i32;
+    let dropped = Rect { x: pos.x, y: pos.y, w: size.width as i32, h: size.height as i32 };
+    let (edge, along) = dock::snap(dropped, screen.work, grip);
+    let updated = {
+        let mut s = state.settings.lock().unwrap();
+        s.dock_edge = edge;
+        s.dock_along = along;
+        s.clone()
+    };
+    let _ = updated.save(&state.dir);
+    place_overlay(app);
+    let _ = app.emit("settings-changed", updated);
+}
+
+/* ---------- showing and hiding ---------- */
+
 fn hide_overlay(app: &AppHandle) {
     if let Some(win) = overlay(app) {
         let _ = win.hide();
     }
+    if let Ok(sc) = INSERT_SHORTCUT.parse::<Shortcut>() {
+        let _ = app.global_shortcut().unregister(sc);
+    }
+    glow(app, false);
 }
 
-/// Open the overlay near the top of the screen the user is working on.
-fn show_overlay(app: &AppHandle) {
+/// Remember what the user is looking at, before the overlay appears.
+/// Returns None when the overlay itself is in front (nothing new to see).
+fn capture_context(app: &AppHandle) -> Option<WakeInfo> {
+    let win = overlay(app)?;
+    let state = app.state::<App>();
+    let include_screen = state.settings.lock().unwrap().include_screen;
+    let ours = own_hwnd(&win);
+    let foreground = platform::foreground();
+    if foreground.hwnd == ours && ours != 0 {
+        return None;
+    }
+    if let Some(screen) = screen_under_cursor(app, &win) {
+        *state.screen.lock().unwrap() = Some(screen);
+    }
+    let shot = if include_screen { platform::capture_monitor(foreground.hwnd) } else { None };
+    let info = WakeInfo { title: foreground.title.clone(), process: foreground.process.clone(), has_screen: shot.is_some(), typing: false };
+    *state.snapshot.lock().unwrap() = Snapshot { foreground, shot };
+    Some(info)
+}
+
+/// Show the overlay. With `typing` it takes keyboard focus; without, it
+/// appears without disturbing the app the user is in.
+fn show_overlay(app: &AppHandle, typing: bool, info: Option<WakeInfo>) {
     let Some(win) = overlay(app) else { return };
     let state = app.state::<App>();
-    let settings = state.settings.lock().unwrap().clone();
-    let ours = own_hwnd(&win);
-
-    // Look at the screen before the overlay appears on it.
-    let foreground = platform::foreground();
-    let mut info = None;
-    if foreground.hwnd != ours || ours == 0 {
-        let shot = if settings.include_screen { platform::capture_monitor(foreground.hwnd) } else { None };
-        info = Some(WakeInfo { title: foreground.title.clone(), process: foreground.process.clone(), has_screen: shot.is_some() });
-        *state.snapshot.lock().unwrap() = Snapshot { foreground, shot };
+    if state.screen.lock().unwrap().is_none() {
+        *state.screen.lock().unwrap() = screen_under_cursor(app, &win);
     }
-
-    let cursor = app.cursor_position().ok();
-    let monitor = cursor
-        .and_then(|p| app.monitor_from_point(p.x, p.y).ok().flatten())
-        .or_else(|| win.primary_monitor().ok().flatten());
-    if let Some(m) = monitor {
-        // The window's own size reads as zero before it is first shown, so
-        // the width comes from the known logical size instead.
-        let width = (OVERLAY_WIDTH * m.scale_factor()) as i32;
-        let x = m.position().x + (m.size().width as i32 - width) / 2;
-        let y = m.position().y + (m.size().height as f64 * 0.14) as i32;
-        let _ = win.set_position(PhysicalPosition::new(x, y));
-    }
-
+    let _ = win.set_focusable(typing);
+    place_overlay(app);
     *state.shown_at.lock().unwrap() = Instant::now();
     let _ = win.show();
-    let _ = win.set_focus();
-    platform::force_foreground(ours);
-    if let Some(info) = info {
-        let _ = app.emit("wake", info);
-    } else {
-        let _ = app.emit("refocus", ());
+    if typing {
+        let _ = win.set_focus();
+        platform::force_foreground(own_hwnd(&win));
+    }
+    if let Ok(sc) = INSERT_SHORTCUT.parse::<Shortcut>() {
+        let shortcuts = app.global_shortcut();
+        if !shortcuts.is_registered(sc) {
+            let _ = shortcuts.register(sc);
+        }
+    }
+    match info {
+        Some(mut info) => {
+            info.typing = typing;
+            let _ = app.emit_to("main", "wake", info);
+        }
+        None => {
+            let _ = app.emit_to("main", "refocus", typing);
+        }
     }
 
-    // Start the AI process now, while the user is still typing.
+    // Start the AI process now, before the question is ready.
     let app2 = app.clone();
     std::thread::spawn(move || {
         let state = app2.state::<App>();
-        state.engine.prewarm(&settings.provider, &settings.claude_model, &settings.claude_path);
+        let s = state.settings.lock().unwrap().clone();
+        state.engine.prewarm(&s.provider, &s.claude_model, &s.claude_path);
     });
 }
 
+/// A tap of the wake keys: open to type, or hide if already typing.
 fn toggle_overlay(app: &AppHandle) {
     let Some(win) = overlay(app) else { return };
     let visible = win.is_visible().unwrap_or(false);
@@ -125,91 +268,39 @@ fn toggle_overlay(app: &AppHandle) {
     if visible && focused {
         hide_overlay(app);
     } else {
-        show_overlay(app);
+        let info = capture_context(app);
+        show_overlay(app, true, info);
     }
 }
 
-/// Apply everything in the settings that has an effect outside the UI.
-/// Returns a message when something could not be applied.
-fn apply_settings(app: &AppHandle, s: &Settings) -> Option<String> {
-    let mut problem = None;
-
-    if let Some(win) = overlay(app) {
-        let _ = win.set_content_protected(s.hide_from_capture);
-    }
-    if let Some(item) = app.state::<App>().capture_item.lock().unwrap().as_ref() {
-        let _ = item.set_checked(s.hide_from_capture);
-    }
-
-    let shortcuts = app.global_shortcut();
-    let _ = shortcuts.unregister_all();
-    if !s.shortcut.trim().is_empty() {
-        match s.shortcut.trim().parse::<Shortcut>() {
-            Ok(sc) => {
-                if let Err(e) = shortcuts.register(sc) {
-                    problem = Some(format!("Could not register {}: {e}. Another app may be using it.", s.shortcut));
-                }
-            }
-            Err(e) => problem = Some(format!("{} is not a valid shortcut: {e}", s.shortcut)),
+/// The soft light around the screen edge while listening.
+fn glow(app: &AppHandle, on: bool) {
+    let Some(win) = app.get_webview_window("glow") else { return };
+    let state = app.state::<App>();
+    if on {
+        if !state.settings.lock().unwrap().edge_glow {
+            return;
         }
-    }
-    hotkey::set_mode(hotkey::Mode::parse(&s.wake_mode));
-
-    let auto = app.autolaunch();
-    if auto.is_enabled().unwrap_or(false) != s.autostart {
-        let result = if s.autostart { auto.enable() } else { auto.disable() };
-        if let Err(e) = result {
-            problem.get_or_insert(format!("Could not change start-with-Windows: {e}"));
+        if let Some(screen) = *state.screen.lock().unwrap() {
+            let _ = win.set_position(PhysicalPosition::new(screen.full.x, screen.full.y));
+            let _ = win.set_size(PhysicalSize::new(screen.full.w as u32, screen.full.h as u32));
         }
-    }
-    problem
-}
-
-#[tauri::command]
-fn get_settings(state: State<App>) -> Settings {
-    state.settings.lock().unwrap().clone()
-}
-
-#[derive(Serialize)]
-struct SaveResult {
-    settings: Settings,
-    warning: Option<String>,
-}
-
-#[tauri::command]
-fn save_settings(app: AppHandle, state: State<App>, settings: Settings) -> Result<SaveResult, String> {
-    settings.save(&state.dir)?;
-    *state.settings.lock().unwrap() = settings.clone();
-    let warning = apply_settings(&app, &settings);
-    Ok(SaveResult { settings, warning })
-}
-
-#[derive(Serialize)]
-struct Status {
-    provider: String,
-    cli_found: bool,
-    detail: String,
-    hook_supported: bool,
-}
-
-/// Whether the chosen CLI is installed, for the hint under the prompt.
-#[tauri::command(async)]
-fn status(state: State<App>) -> Status {
-    let s = state.settings.lock().unwrap().clone();
-    let found = if s.provider == "codex" { backend::resolve_cli("codex", &s.codex_path) } else { backend::resolve_cli("claude", &s.claude_path) };
-    Status {
-        provider: s.provider,
-        cli_found: found.is_ok(),
-        detail: match found {
-            Ok(p) => p.display().to_string(),
-            Err(e) => e,
-        },
-        hook_supported: cfg!(windows),
+        let _ = win.set_ignore_cursor_events(true);
+        let _ = win.show();
+        let _ = app.emit_to("glow", "glow", true);
+    } else if win.is_visible().unwrap_or(false) {
+        let _ = app.emit_to("glow", "glow", false);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(450));
+            let _ = win.hide();
+        });
     }
 }
 
-#[tauri::command(async)]
-fn ask(state: State<App>, prompt: String, with_screen: bool) -> Result<u64, String> {
+/* ---------- asking ---------- */
+
+fn send_question(app: &AppHandle, prompt: &str, with_screen: bool) -> Result<u64, String> {
+    let state = app.state::<App>();
     let s = state.settings.lock().unwrap().clone();
     let (title, process, shot) = {
         let mut snap = state.snapshot.lock().unwrap();
@@ -240,6 +331,204 @@ fn ask(state: State<App>, prompt: String, with_screen: bool) -> Result<u64, Stri
     })
 }
 
+/* ---------- push to talk ---------- */
+
+/// Make sure the speech model is downloaded and in memory.
+fn prepare_speech(app: &AppHandle, announce: bool) -> Result<(), String> {
+    let state = app.state::<App>();
+    let model = state.settings.lock().unwrap().voice_model.clone();
+    if !stt::model_ready(&state.dir, &model) {
+        let _one_at_a_time = state.model_download.lock().map_err(|_| "download lock poisoned")?;
+        let app2 = app.clone();
+        stt::ensure_model(&state.dir, &model, &move |pct| {
+            if announce {
+                phase(&app2, "preparing", format!("Downloading speech model {pct}%"));
+            }
+        })?;
+    }
+    state.speech.load(&state.dir, &model)
+}
+
+/// The wake keys went down: start recording straight away.
+fn talk_start(app: &AppHandle) {
+    let state = app.state::<App>();
+    let id = {
+        let mut slot = state.talk.lock().unwrap();
+        if slot.is_some() {
+            return;
+        }
+        let id = state.talk_ids.fetch_add(1, Ordering::SeqCst) + 1;
+        let (level_app, last) = (app.clone(), AtomicU64::new(0));
+        let started = Instant::now();
+        let recording = audio::Recording::start(move |level| {
+            // About 25 updates a second is plenty for the meter.
+            let now = started.elapsed().as_millis() as u64;
+            if now.saturating_sub(last.load(Ordering::Relaxed)) >= 40 {
+                last.store(now, Ordering::Relaxed);
+                let _ = level_app.emit_to("main", "level", level);
+            }
+        });
+        *slot = Some(Talk { id, recording });
+        id
+    };
+    let info = capture_context(app);
+
+    // Only show "Listening" once it is clearly a hold and not a tap.
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(TAP_MS - 60));
+        let state = app.state::<App>();
+        if state.talk.lock().unwrap().as_ref().map(|t| t.id) != Some(id) {
+            return;
+        }
+        show_overlay(&app, false, info);
+        phase(&app, "listening", "");
+        glow(&app, true);
+        // Load the speech model while the user is still talking.
+        let _ = prepare_speech(&app, false);
+    });
+}
+
+/// The wake keys were released after `held_ms`.
+fn talk_end(app: &AppHandle, held_ms: u64) {
+    let state = app.state::<App>();
+    let Some(talk) = state.talk.lock().unwrap().take() else { return };
+    if held_ms < TAP_MS {
+        talk.recording.cancel();
+        toggle_overlay(app);
+        return;
+    }
+    glow(app, false);
+    phase(app, "transcribing", "");
+    let result = (|| -> Result<u64, String> {
+        let samples = talk.recording.finish()?;
+        if !audio::has_speech(&samples) {
+            return Err("I didn't hear anything. Hold the keys while you speak.".into());
+        }
+        prepare_speech(app, true)?;
+        phase(app, "transcribing", "");
+        let text = state.speech.transcribe(&samples)?;
+        if text.is_empty() {
+            return Err("I couldn't make out any words. Try again a little closer to the microphone.".into());
+        }
+        let turn = send_question(app, &text, true)?;
+        let _ = app.emit_to("main", "asked", Asked { turn, text });
+        Ok(turn)
+    })();
+    if let Err(message) = result {
+        phase(app, "error", message);
+    }
+}
+
+fn talk_cancel(app: &AppHandle) {
+    let state = app.state::<App>();
+    let talk = state.talk.lock().unwrap().take();
+    if let Some(talk) = talk {
+        talk.recording.cancel();
+        glow(app, false);
+        phase(app, "cancelled", "");
+    }
+}
+
+/* ---------- settings ---------- */
+
+/// Apply everything in the settings that has an effect outside the UI.
+/// Returns a message when something could not be applied.
+fn apply_settings(app: &AppHandle, s: &Settings) -> Option<String> {
+    let mut problem = None;
+
+    for label in ["main", "glow"] {
+        if let Some(win) = app.get_webview_window(label) {
+            let _ = win.set_content_protected(s.hide_from_capture);
+        }
+    }
+    if let Some(item) = app.state::<App>().capture_item.lock().unwrap().as_ref() {
+        let _ = item.set_checked(s.hide_from_capture);
+    }
+
+    let shortcuts = app.global_shortcut();
+    let _ = shortcuts.unregister_all();
+    if !s.shortcut.trim().is_empty() {
+        match s.shortcut.trim().parse::<Shortcut>() {
+            Ok(sc) => {
+                if let Err(e) = shortcuts.register(sc) {
+                    problem = Some(format!("Could not register {}: {e}. Another app may be using it.", s.shortcut));
+                }
+            }
+            Err(e) => problem = Some(format!("{} is not a valid shortcut: {e}", s.shortcut)),
+        }
+    }
+    hotkey::set_mode(hotkey::Mode::parse(&s.wake_mode));
+
+    let auto = app.autolaunch();
+    if auto.is_enabled().unwrap_or(false) != s.autostart {
+        let result = if s.autostart { auto.enable() } else { auto.disable() };
+        if let Err(e) = result {
+            problem.get_or_insert(format!("Could not change start-with-Windows: {e}"));
+        }
+    }
+    place_overlay(app);
+    problem
+}
+
+#[tauri::command]
+fn get_settings(state: State<App>) -> Settings {
+    state.settings.lock().unwrap().clone()
+}
+
+#[derive(Serialize)]
+struct SaveResult {
+    settings: Settings,
+    warning: Option<String>,
+}
+
+#[tauri::command]
+fn save_settings(app: AppHandle, state: State<App>, mut settings: Settings) -> Result<SaveResult, String> {
+    settings.opacity = settings.opacity.clamp(0.3, 1.0);
+    settings.dock_along = settings.dock_along.clamp(0.0, 1.0);
+    settings.save(&state.dir)?;
+    *state.settings.lock().unwrap() = settings.clone();
+    let warning = apply_settings(&app, &settings);
+    // Applying settings re-registers shortcuts, which drops the insert key.
+    if overlay(&app).is_some_and(|w| w.is_visible().unwrap_or(false)) {
+        if let Ok(sc) = INSERT_SHORTCUT.parse::<Shortcut>() {
+            let _ = app.global_shortcut().register(sc);
+        }
+    }
+    Ok(SaveResult { settings, warning })
+}
+
+#[derive(Serialize)]
+struct Status {
+    provider: String,
+    cli_found: bool,
+    detail: String,
+    hook_supported: bool,
+    voice_model_ready: bool,
+}
+
+/// Whether the chosen CLI is installed, for the hint in the overlay.
+#[tauri::command(async)]
+fn status(state: State<App>) -> Status {
+    let s = state.settings.lock().unwrap().clone();
+    let found = if s.provider == "codex" { backend::resolve_cli("codex", &s.codex_path) } else { backend::resolve_cli("claude", &s.claude_path) };
+    Status {
+        provider: s.provider,
+        cli_found: found.is_ok(),
+        detail: match found {
+            Ok(p) => p.display().to_string(),
+            Err(e) => e,
+        },
+        hook_supported: cfg!(windows),
+        voice_model_ready: stt::model_ready(&state.dir, &s.voice_model),
+    }
+}
+
+#[tauri::command(async)]
+fn ask(app: AppHandle, prompt: String, with_screen: bool) -> Result<u64, String> {
+    send_question(&app, &prompt, with_screen)
+}
+
 #[tauri::command(async)]
 fn stop(state: State<App>) {
     state.engine.stop();
@@ -257,10 +546,20 @@ fn hide(app: AppHandle) {
     hide_overlay(&app);
 }
 
+/// The interface asks for the window to match its content.
 #[tauri::command]
-fn resize(app: AppHandle, height: f64) {
+fn resize(app: AppHandle, state: State<App>, width: f64, height: f64) {
+    *state.size.lock().unwrap() = (width.clamp(120.0, MAX_WIDTH), height.clamp(40.0, MAX_HEIGHT));
+    place_overlay(&app);
+}
+
+/// The user clicked into the overlay to type.
+#[tauri::command]
+fn focus(app: AppHandle) {
     if let Some(win) = overlay(&app) {
-        let _ = win.set_size(LogicalSize::new(OVERLAY_WIDTH, height.clamp(60.0, MAX_HEIGHT)));
+        let _ = win.set_focusable(true);
+        let _ = win.set_focus();
+        platform::force_foreground(own_hwnd(&win));
     }
 }
 
@@ -290,15 +589,19 @@ fn build_tray(app: &AppHandle, hide_from_capture: bool) -> tauri::Result<()> {
     let menu = Menu::with_items(app, &[&open, &settings, &capture, &PredefinedMenuItem::separator(app)?, &quit])?;
     *app.state::<App>().capture_item.lock().unwrap() = Some(capture);
 
+    let open_typing = |app: &AppHandle| {
+        let info = capture_context(app);
+        show_overlay(app, true, info);
+    };
     let mut tray = TrayIconBuilder::with_id("tray")
         .tooltip("Agent Desk")
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| match event.id.as_ref() {
-            "open" => show_overlay(app),
+        .on_menu_event(move |app, event| match event.id.as_ref() {
+            "open" => open_typing(app),
             "settings" => {
-                show_overlay(app);
-                let _ = app.emit("open-settings", ());
+                open_typing(app);
+                let _ = app.emit_to("main", "open-settings", ());
             }
             "capture" => {
                 let state = app.state::<App>();
@@ -308,8 +611,10 @@ fn build_tray(app: &AppHandle, hide_from_capture: bool) -> tauri::Result<()> {
                     s.clone()
                 };
                 let _ = updated.save(&state.dir);
-                if let Some(win) = overlay(app) {
-                    let _ = win.set_content_protected(updated.hide_from_capture);
+                for label in ["main", "glow"] {
+                    if let Some(win) = app.get_webview_window(label) {
+                        let _ = win.set_content_protected(updated.hide_from_capture);
+                    }
                 }
                 if let Some(item) = state.capture_item.lock().unwrap().as_ref() {
                     let _ = item.set_checked(updated.hide_from_capture);
@@ -336,14 +641,45 @@ fn build_tray(app: &AppHandle, hide_from_capture: bool) -> tauri::Result<()> {
 
 fn main() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_overlay(app)))
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            let info = capture_context(app);
+            show_overlay(app, true, info);
+        }))
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, _shortcut, event| {
-                    if event.state() == ShortcutState::Pressed {
-                        toggle_overlay(app);
+                .with_handler(|app, shortcut, event| {
+                    let app = app.clone();
+                    if INSERT_SHORTCUT.parse::<Shortcut>().is_ok_and(|s| &s == shortcut) {
+                        if event.state() == ShortcutState::Pressed {
+                            let _ = app.emit_to("main", "insert-request", ());
+                        }
+                        return;
                     }
+                    // The user's shortcut works like the wake keys: hold to
+                    // talk, tap to type. The work happens off this thread.
+                    let pressed = event.state() == ShortcutState::Pressed;
+                    std::thread::spawn(move || {
+                        let state = app.state::<App>();
+                        if pressed {
+                            let first = {
+                                let mut down = state.shortcut_down.lock().unwrap();
+                                let first = down.is_none(); // ignore key repeat
+                                if first {
+                                    *down = Some(Instant::now());
+                                }
+                                first
+                            };
+                            if first {
+                                talk_start(&app);
+                            }
+                        } else {
+                            let since = state.shortcut_down.lock().unwrap().take();
+                            if let Some(since) = since {
+                                talk_end(&app, since.elapsed().as_millis() as u64);
+                            }
+                        }
+                    });
                 })
                 .build(),
         )
@@ -356,67 +692,106 @@ fn main() {
             new_chat,
             hide,
             resize,
+            focus,
             copy_text,
             insert_text
         ])
         .setup(|app| {
             let handle = app.handle().clone();
             let dir = app.path().app_config_dir()?;
+            let first_run = !dir.join("settings.json").exists();
             let settings = Settings::load(&dir);
 
             let emitter = handle.clone();
             let emit: Arc<dyn Fn(AiEvent) + Send + Sync> = Arc::new(move |event| {
-                let _ = emitter.emit("ai", event);
+                let _ = emitter.emit_to("main", "ai", event);
             });
             app.manage(App {
                 engine: Engine::new(dir.clone(), emit),
-                dir,
+                speech: stt::Transcriber::default(),
+                model_download: Mutex::new(()),
+                dir: dir.clone(),
                 settings: Mutex::new(settings.clone()),
                 snapshot: Mutex::new(Snapshot::default()),
+                talk: Mutex::new(None),
+                talk_ids: AtomicU64::new(0),
+                shortcut_down: Mutex::new(None),
+                screen: Mutex::new(None),
+                size: Mutex::new((360.0, NOTCH_HEIGHT)),
+                placed: Mutex::new((i32::MIN, i32::MIN)),
+                moves: AtomicU64::new(0),
                 shown_at: Mutex::new(Instant::now()),
                 capture_item: Mutex::new(None),
             });
 
             build_tray(&handle, settings.hide_from_capture)?;
 
-            // Modifier-only wake gestures arrive from the keyboard hook
-            // thread, which must return quickly, so the work moves elsewhere.
+            // Gestures arrive on the keyboard hook thread, which must return
+            // at once, so the work moves to its own thread.
             let hook_app = handle.clone();
-            hotkey::init(Box::new(move || {
+            hotkey::init(Box::new(move |gesture| {
                 let app = hook_app.clone();
-                std::thread::spawn(move || toggle_overlay(&app));
+                std::thread::spawn(move || match gesture {
+                    Gesture::Down => talk_start(&app),
+                    Gesture::Up(held) => talk_end(&app, held),
+                    Gesture::Cancel => talk_cancel(&app),
+                    Gesture::Tap => toggle_overlay(&app),
+                    Gesture::None => {}
+                });
             }));
             if let Some(warning) = apply_settings(&handle, &settings) {
                 eprintln!("agent-desk: {warning}");
             }
 
-            // Hide when the user clicks elsewhere.
             if let Some(win) = overlay(&handle) {
-                let blur_app = handle.clone();
-                win.on_window_event(move |event| {
-                    if let WindowEvent::Focused(false) = event {
-                        let state = blur_app.state::<App>();
+                let events_app = handle.clone();
+                win.on_window_event(move |event| match event {
+                    // Hide when the user clicks elsewhere (if they chose that).
+                    WindowEvent::Focused(false) => {
+                        let state = events_app.state::<App>();
                         let just_shown = state.shown_at.lock().unwrap().elapsed() < Duration::from_millis(400);
                         if state.settings.lock().unwrap().hide_on_blur && !just_shown {
-                            hide_overlay(&blur_app);
+                            hide_overlay(&events_app);
                         }
                     }
+                    // A move the app did not make is the user dragging. When
+                    // the window has been still for a moment, snap it.
+                    WindowEvent::Moved(pos) => {
+                        let state = events_app.state::<App>();
+                        let (px, py) = *state.placed.lock().unwrap();
+                        if (pos.x - px).abs() <= 1 && (pos.y - py).abs() <= 1 {
+                            return;
+                        }
+                        let id = state.moves.fetch_add(1, Ordering::SeqCst) + 1;
+                        let app = events_app.clone();
+                        std::thread::spawn(move || {
+                            std::thread::sleep(Duration::from_millis(350));
+                            if app.state::<App>().moves.load(Ordering::SeqCst) == id {
+                                finish_drag(&app);
+                            }
+                        });
+                    }
+                    _ => {}
                 });
             }
 
-            // Close the AI process after it has been idle for a while.
+            // Free the AI process and the speech model after a while unused.
             let reaper = handle.clone();
             std::thread::spawn(move || loop {
                 std::thread::sleep(Duration::from_secs(30));
                 let state = reaper.state::<App>();
                 let minutes = state.settings.lock().unwrap().keep_warm_minutes;
                 state.engine.reap_idle(minutes);
+                if state.talk.lock().unwrap().is_none() {
+                    state.speech.reap_idle(minutes);
+                }
             });
 
             // First launch: show the overlay once so the user knows it is running.
-            if !app.path().app_config_dir()?.join("settings.json").exists() {
-                let _ = settings.save(&app.path().app_config_dir()?);
-                show_overlay(&handle);
+            if first_run {
+                let _ = settings.save(&dir);
+                let info = capture_context(&handle);
+                show_overlay(&handle, true, info);
             }
             Ok(())
         })

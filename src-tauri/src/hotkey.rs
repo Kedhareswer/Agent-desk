@@ -36,6 +36,21 @@ pub enum Key {
 const TAP_MAX_MS: u64 = 300;
 const DOUBLE_TAP_GAP_MS: u64 = 400;
 
+/// What a key event meant.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Gesture {
+    None,
+    /// Ctrl+Alt went down together: start listening.
+    Down,
+    /// They were released after this many milliseconds. A short hold is a
+    /// tap (open the bar to type); a longer one was speech.
+    Up(u64),
+    /// Another key joined the chord, so it was an ordinary shortcut.
+    Cancel,
+    /// Double-tap Ctrl.
+    Tap,
+}
+
 /// Pure gesture state machine, kept separate from the hook so it can be
 /// tested on any platform.
 pub struct Detector {
@@ -54,44 +69,56 @@ impl Detector {
         Self { mode, ctrl: false, alt: false, dirty: false, armed: false, press_start: 0, last_tap: None }
     }
 
-    /// Feed one key event. Returns true when the wake gesture completed.
-    pub fn on_key(&mut self, key: Key, down: bool, now_ms: u64) -> bool {
+    /// Feed one key event.
+    pub fn on_key(&mut self, key: Key, down: bool, now_ms: u64) -> Gesture {
         match self.mode {
-            Mode::Off => false,
-            Mode::CtrlAlt => self.ctrl_alt(key, down),
-            Mode::DoubleCtrl => self.double_ctrl(key, down, now_ms),
+            Mode::Off => Gesture::None,
+            Mode::CtrlAlt => self.ctrl_alt(key, down, now_ms),
+            Mode::DoubleCtrl => {
+                if self.double_ctrl(key, down, now_ms) {
+                    Gesture::Tap
+                } else {
+                    Gesture::None
+                }
+            }
         }
     }
 
-    fn ctrl_alt(&mut self, key: Key, down: bool) -> bool {
+    fn ctrl_alt(&mut self, key: Key, down: bool, now: u64) -> Gesture {
         if down {
             match key {
                 Key::Ctrl => self.ctrl = true,
                 Key::Alt => self.alt = true,
                 Key::Other => {
-                    self.dirty = true;
+                    let was_armed = self.armed;
+                    self.dirty = self.ctrl || self.alt;
                     self.armed = false;
+                    return if was_armed { Gesture::Cancel } else { Gesture::None };
                 }
             }
-            if self.ctrl && self.alt && !self.dirty {
+            if self.ctrl && self.alt && !self.dirty && !self.armed {
                 self.armed = true;
+                self.press_start = now;
+                return Gesture::Down;
             }
-            return false;
+            return Gesture::None;
         }
-        let mut fire = false;
+        let mut gesture = Gesture::None;
         if key != Key::Other {
             if key == Key::Ctrl {
                 self.ctrl = false;
             } else {
                 self.alt = false;
             }
-            fire = self.armed && !self.dirty;
+            if self.armed {
+                gesture = Gesture::Up(now.saturating_sub(self.press_start));
+            }
             self.armed = false;
         }
         if !self.ctrl && !self.alt {
             self.dirty = false;
         }
-        fire
+        gesture
     }
 
     fn double_ctrl(&mut self, key: Key, down: bool, now: u64) -> bool {
@@ -131,7 +158,7 @@ impl Detector {
 
 #[cfg(windows)]
 mod hook {
-    use super::{Detector, Key, Mode};
+    use super::{Detector, Gesture, Key, Mode};
     use std::sync::{
         atomic::{AtomicU32, Ordering},
         Mutex, OnceLock,
@@ -148,7 +175,7 @@ mod hook {
     };
 
     static DETECTOR: Mutex<Detector> = Mutex::new(Detector::new(Mode::Off));
-    static CALLBACK: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
+    static CALLBACK: OnceLock<Box<dyn Fn(Gesture) + Send + Sync>> = OnceLock::new();
     static HOOK_THREAD: AtomicU32 = AtomicU32::new(0);
 
     unsafe extern "system" fn on_event(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -166,13 +193,13 @@ mod hook {
                 };
                 let msg = wparam.0 as u32;
                 let down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
-                let fire = DETECTOR
+                let gesture = DETECTOR
                     .lock()
                     .map(|mut d| d.on_key(key, down, info.time as u64))
-                    .unwrap_or(false);
-                if fire {
+                    .unwrap_or(Gesture::None);
+                if gesture != Gesture::None {
                     if let Some(cb) = CALLBACK.get() {
-                        cb();
+                        cb(gesture);
                     }
                 }
             }
@@ -180,7 +207,7 @@ mod hook {
         CallNextHookEx(None, code, wparam, lparam)
     }
 
-    pub fn init(callback: Box<dyn Fn() + Send + Sync>) {
+    pub fn init(callback: Box<dyn Fn(Gesture) + Send + Sync>) {
         let _ = CALLBACK.set(callback);
     }
 
@@ -217,8 +244,8 @@ mod hook {
 
 #[cfg(not(windows))]
 mod hook {
-    use super::Mode;
-    pub fn init(_callback: Box<dyn Fn() + Send + Sync>) {}
+    use super::{Gesture, Mode};
+    pub fn init(_callback: Box<dyn Fn(Gesture) + Send + Sync>) {}
     pub fn set_mode(_mode: Mode) {}
 }
 
@@ -227,43 +254,54 @@ pub use hook::{init, set_mode};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use Gesture::*;
 
-    fn run(mode: Mode, events: &[(Key, bool, u64)]) -> usize {
+    fn run(mode: Mode, events: &[(Key, bool, u64)]) -> Vec<Gesture> {
         let mut d = Detector::new(mode);
-        events.iter().filter(|(k, down, t)| d.on_key(*k, *down, *t)).count()
+        events.iter().map(|(k, down, t)| d.on_key(*k, *down, *t)).filter(|g| *g != None).collect()
     }
 
     #[test]
-    fn ctrl_alt_tap_fires_once() {
-        let n = run(Mode::CtrlAlt, &[(Key::Ctrl, true, 0), (Key::Alt, true, 10), (Key::Alt, false, 80), (Key::Ctrl, false, 90)]);
-        assert_eq!(n, 1);
+    fn holding_ctrl_alt_reports_down_then_up_with_duration() {
+        let g = run(Mode::CtrlAlt, &[(Key::Ctrl, true, 0), (Key::Alt, true, 10), (Key::Alt, false, 2510), (Key::Ctrl, false, 2520)]);
+        assert_eq!(g, vec![Down, Up(2500)]);
     }
 
     #[test]
-    fn ctrl_alt_with_another_key_is_a_normal_shortcut() {
-        // Ctrl+Alt+T, Ctrl+Alt+Delete and friends must not wake the app.
-        let n = run(
+    fn key_repeat_while_holding_does_not_restart() {
+        let g = run(Mode::CtrlAlt, &[(Key::Ctrl, true, 0), (Key::Alt, true, 10), (Key::Alt, true, 500), (Key::Ctrl, true, 530), (Key::Ctrl, false, 900), (Key::Alt, false, 910)]);
+        assert_eq!(g, vec![Down, Up(890)]);
+    }
+
+    #[test]
+    fn ctrl_alt_with_another_key_cancels() {
+        // Ctrl+Alt+T, Ctrl+Alt+Delete and friends are ordinary shortcuts.
+        let g = run(
             Mode::CtrlAlt,
             &[(Key::Ctrl, true, 0), (Key::Alt, true, 5), (Key::Other, true, 20), (Key::Other, false, 40), (Key::Alt, false, 60), (Key::Ctrl, false, 70)],
         );
-        assert_eq!(n, 0);
+        assert_eq!(g, vec![Down, Cancel]);
     }
 
     #[test]
-    fn altgr_does_not_fire() {
+    fn altgr_does_nothing() {
         // AltGr arrives as Left Ctrl + Right Alt; Right Alt maps to Other.
-        let n = run(Mode::CtrlAlt, &[(Key::Ctrl, true, 0), (Key::Other, true, 0), (Key::Other, false, 50), (Key::Ctrl, false, 50)]);
-        assert_eq!(n, 0);
+        let g = run(Mode::CtrlAlt, &[(Key::Ctrl, true, 0), (Key::Other, true, 0), (Key::Other, false, 50), (Key::Ctrl, false, 50)]);
+        assert!(g.is_empty());
     }
 
     #[test]
-    fn ctrl_alone_does_not_fire() {
-        assert_eq!(run(Mode::CtrlAlt, &[(Key::Ctrl, true, 0), (Key::Ctrl, false, 50)]), 0);
+    fn ctrl_alone_and_typing_do_nothing() {
+        assert!(run(Mode::CtrlAlt, &[(Key::Ctrl, true, 0), (Key::Ctrl, false, 50)]).is_empty());
+        assert!(run(Mode::CtrlAlt, &[(Key::Other, true, 0), (Key::Other, false, 50)]).is_empty());
+        // Ctrl+C then adding Alt later is still not a clean chord.
+        let g = run(Mode::CtrlAlt, &[(Key::Ctrl, true, 0), (Key::Other, true, 10), (Key::Other, false, 20), (Key::Alt, true, 30), (Key::Alt, false, 40), (Key::Ctrl, false, 50)]);
+        assert!(g.is_empty());
     }
 
     #[test]
-    fn ctrl_alt_works_again_after_a_dirty_chord() {
-        let n = run(
+    fn works_again_after_a_cancelled_chord() {
+        let g = run(
             Mode::CtrlAlt,
             &[
                 (Key::Ctrl, true, 0), (Key::Alt, true, 5), (Key::Other, true, 20), (Key::Other, false, 30),
@@ -271,31 +309,31 @@ mod tests {
                 (Key::Ctrl, true, 500), (Key::Alt, true, 510), (Key::Ctrl, false, 560), (Key::Alt, false, 570),
             ],
         );
-        assert_eq!(n, 1);
+        assert_eq!(g, vec![Down, Cancel, Down, Up(50)]);
     }
 
     #[test]
     fn double_ctrl_fires_on_second_quick_tap() {
-        let n = run(Mode::DoubleCtrl, &[(Key::Ctrl, true, 0), (Key::Ctrl, false, 60), (Key::Ctrl, true, 200), (Key::Ctrl, false, 260)]);
-        assert_eq!(n, 1);
+        let g = run(Mode::DoubleCtrl, &[(Key::Ctrl, true, 0), (Key::Ctrl, false, 60), (Key::Ctrl, true, 200), (Key::Ctrl, false, 260)]);
+        assert_eq!(g, vec![Tap]);
     }
 
     #[test]
     fn slow_or_interrupted_taps_do_not_fire() {
         let slow = run(Mode::DoubleCtrl, &[(Key::Ctrl, true, 0), (Key::Ctrl, false, 60), (Key::Ctrl, true, 900), (Key::Ctrl, false, 960)]);
-        assert_eq!(slow, 0);
+        assert!(slow.is_empty());
         // Ctrl+C then Ctrl+V is two Ctrl presses, but not a double tap.
         let copy_paste = run(
             Mode::DoubleCtrl,
             &[(Key::Ctrl, true, 0), (Key::Other, true, 20), (Key::Other, false, 40), (Key::Ctrl, false, 60),
               (Key::Ctrl, true, 150), (Key::Other, true, 170), (Key::Other, false, 190), (Key::Ctrl, false, 210)],
         );
-        assert_eq!(copy_paste, 0);
+        assert!(copy_paste.is_empty());
     }
 
     #[test]
     fn key_repeat_while_holding_ctrl_is_not_a_tap() {
-        let n = run(Mode::DoubleCtrl, &[(Key::Ctrl, true, 0), (Key::Ctrl, true, 250), (Key::Ctrl, true, 500), (Key::Ctrl, false, 520), (Key::Ctrl, true, 600), (Key::Ctrl, false, 650)]);
-        assert_eq!(n, 0);
+        let g = run(Mode::DoubleCtrl, &[(Key::Ctrl, true, 0), (Key::Ctrl, true, 250), (Key::Ctrl, true, 500), (Key::Ctrl, false, 520), (Key::Ctrl, true, 600), (Key::Ctrl, false, 650)]);
+        assert!(g.is_empty());
     }
 }

@@ -1,27 +1,36 @@
 # Agent Desk
 
-A small AI assistant for Windows that stays out of the way until you call it.
-Tap **Ctrl + Alt** in any app and a prompt bar appears. It already sees the
-window you were working in, answers through your existing **Claude** or
-**ChatGPT (Codex)** subscription, and can paste the answer straight back.
+A voice-first AI assistant for Windows that stays out of the way until you
+call it. Hold **Ctrl + Alt**, say what you need, and let go. A small black
+notch on the edge of your screen shows what it is doing, then grows into the
+answer. It already sees the window you were working in, answers through your
+existing **Claude** or **ChatGPT (Codex)** subscription, and can paste the
+answer straight back.
 
 No API key and no extra bill: Agent Desk drives the `claude` or `codex`
-command-line tool you are already signed in to.
+command-line tool you are already signed in to. Speech is turned into text
+on your own computer.
 
 ## What it does
 
-- **Wakes anywhere.** Tap Ctrl + Alt, double-tap Ctrl, or use a shortcut you
-  choose (default Ctrl + Alt + Space).
+- **Hold to talk.** Hold Ctrl + Alt, speak, release. It transcribes what you
+  said and starts working, with no Enter key. A quick tap opens the same
+  notch for typing instead.
+- **One notch.** Collapsed, it shows the state (Listening, Thinking,
+  Answering, Done). When there is something to read, the same shape grows to
+  hold it, then shrinks back.
 - **Sees your screen.** A screenshot of the active monitor and the window
-  title go with your first question, so "draft a reply" or just Enter is
-  enough.
-- **Answers fast.** The Claude session starts while you type and stays open
-  for follow-ups, so the first words arrive in about a second or two.
-- **Pastes back.** Ctrl + Enter inserts the answer into the app you came
-  from.
+  title go with your first question, so "draft a reply" is enough.
+- **Pastes back.** Ctrl + Alt + Enter inserts the answer into the app you
+  are in, without touching the notch.
+- **Goes where you want.** Drag it to the top, bottom, left or right edge of
+  any screen. A transparency slider makes it more or less see-through.
+- **Soft edge glow.** A thin band of light around the screen while it is
+  listening (can be turned off).
 - **Stays light.** A native Tauri app, not Electron. When idle it is one
-  small tray process; the AI process is closed after a few idle minutes.
-- **Stays private on screen shares.** The overlay is excluded from
+  small tray process; the AI process and the speech model are released after
+  a few idle minutes.
+- **Stays private on screen shares.** The notch and glow are excluded from
   screenshots, recordings and screen sharing (a tray toggle turns this off).
 
 ## Requirements
@@ -33,6 +42,8 @@ command-line tool you are already signed in to.
     subscription (run `claude` once in a terminal), or
   - the Codex CLI (`npm install -g @openai/codex`), signed in with your
     ChatGPT plan (run `codex` once).
+- A microphone. The first time you talk, a speech model is downloaded once
+  (148 MB by default; a 75 MB and a 488 MB option are in Settings).
 
 ## Install
 
@@ -44,14 +55,18 @@ signed, so Windows SmartScreen will ask you to confirm.
 
 | Key | Action |
 | --- | --- |
-| Ctrl + Alt (tap) | Open or hide the overlay |
-| Enter | Ask (empty = "help with what's on my screen") |
+| Ctrl + Alt (hold) | Talk; release to send |
+| Ctrl + Alt (tap) | Open the notch to type, or hide it |
+| Ctrl + Alt + Enter | Paste the answer into the app in front |
+| Enter | Ask what you typed (empty = "help with what's on my screen") |
 | Shift + Enter | New line |
-| Ctrl + Enter | Paste the answer into the previous app |
 | Ctrl + Shift + C | Copy the answer |
 | Ctrl + N | New conversation |
 | Ctrl + , | Settings |
 | Esc | Stop the answer, then hide |
+
+Your own shortcut (default Ctrl + Alt + Space) works the same way: hold to
+talk, tap to type.
 
 ## How it works
 
@@ -59,14 +74,21 @@ signed, so Windows SmartScreen will ask you to confirm.
 | --- | --- |
 | Tray, overlay window, commands | `src-tauri/src/main.rs` |
 | Claude and Codex CLI bridge | `src-tauri/src/backend.rs` |
-| Ctrl + Alt and double-Ctrl detection | `src-tauri/src/hotkey.rs` |
+| Hold, tap and double-tap key detection | `src-tauri/src/hotkey.rs` |
+| Microphone capture | `src-tauri/src/audio.rs` |
+| Speech-to-text (whisper.cpp) | `src-tauri/src/stt.rs` |
+| Docking to a screen edge | `src-tauri/src/dock.rs` |
 | Foreground window, screenshot, paste | `src-tauri/src/platform.rs` |
 | Settings file | `src-tauri/src/settings.rs` |
-| Overlay interface | `ui/` |
+| Notch and glow interface | `ui/` |
 
 Claude runs as `claude -p` in streaming JSON mode with all tools, MCP servers
 and session history turned off, inside an empty folder: it can only chat.
 Codex runs as `codex exec --json` in a read-only sandbox.
+
+Neither Claude nor Codex accepts audio, so speech is transcribed locally
+with [whisper.cpp](https://github.com/ggml-org/whisper.cpp) and sent as
+text. Audio never leaves the computer.
 
 The modifier-only wake gestures use a low-level keyboard hook because Windows
 cannot register a hotkey made only of modifier keys. The hook looks for the
@@ -97,9 +119,14 @@ cargo test --manifest-path src-tauri/Cargo.toml
 node tests/ui.test.mjs
 ```
 
+Building needs CMake and LLVM/Clang as well as Rust and Node, because the
+speech engine (whisper.cpp) is compiled from source.
+
 The UI test needs Playwright (`npm install --no-save playwright`). A live
 end-to-end test against a signed-in Claude CLI runs with
 `cargo test --manifest-path src-tauri/Cargo.toml -- --ignored live_claude`.
 
 The app also builds and runs on Linux for development, without the
 Windows-only parts (screenshot, paste, modifier-only gestures).
+`src-tauri/cross/build-windows.sh` cross-compiles a Windows test build from
+Linux.
