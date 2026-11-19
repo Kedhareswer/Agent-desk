@@ -51,6 +51,66 @@
             <span id="stat"></span>
           </div>
 
+
+          <div id="setup" hidden>
+            <div class="setup-head wide">
+              <h2>Welcome to Agent Desk</h2>
+              <p>Set it up once. Everything here can be changed later in Settings, or from the tray under <b>Setup and guide</b>.</p>
+            </div>
+
+            <section class="wide">
+              <h3>1 · Your AI subscription</h3>
+              <label>Use
+                <select id="setup-provider">
+                  <option value="claude">Claude (your Claude Code sign-in)</option>
+                  <option value="codex">ChatGPT (your Codex CLI sign-in)</option>
+                </select>
+              </label>
+              <div class="check" id="check-cli"><span class="dot"></span><div><b>Command-line tool</b><small></small></div></div>
+              <div class="check" id="check-account"><span class="dot"></span><div><b>Signed in</b><small></small></div>
+                <button type="button" id="copy-signin" class="small" title="Copy the command, paste it into a terminal, sign in, then press Check again">Copy sign-in command</button></div>
+              <label>Account folder <small>Optional. Agent Desk will use only the sign-in kept in this folder, every time. Leave empty for your usual sign-in.</small>
+                <input id="setup-account" placeholder="Your usual sign-in" spellcheck="false">
+              </label>
+              <label>Model
+                <select id="setup-model"></select>
+                <small id="model-desc"></small>
+              </label>
+              <div class="row"><button type="button" id="setup-check" class="small">Check again</button><span id="setup-checking" class="muted"></span></div>
+            </section>
+
+            <section class="wide">
+              <h3>2 · Voice (runs on this computer)</h3>
+              <div id="speech-list"></div>
+            </section>
+
+            <section class="wide">
+              <h3>3 · How to use it</h3>
+              <ul class="guide">
+                <li><kbd>Ctrl</kbd> + <kbd>Alt</kbd> <b>hold</b>: talk, let go to send. A quick <b>tap</b> opens this notch to type.</li>
+                <li><kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>L</kbd>: work with me (live mode) follows a call and helps when it can.</li>
+                <li><kbd>Ctrl</kbd> + <kbd>Enter</kbd>: paste the answer into the app you were in. <kbd>Esc</kbd> stops or hides.</li>
+                <li><b>Do things:</b> “open Chrome and go to GitHub”, “attach the report from Documents and send it to my team in Teams”. Every step shows here; sending, deleting, buying or running something waits for your OK.</li>
+                <li><b>Schedules:</b> “every weekday at 9 open my calendar and summarise today”, “remind me at 5 to send the report”.</li>
+                <li>The gear (hover the notch) opens Settings. Drag the notch by its top strip to any screen edge.</li>
+              </ul>
+            </section>
+
+            <section class="wide">
+              <h3>4 · Options</h3>
+              <label class="switch"><input type="checkbox" id="setup-actions"><span>Let Agent Desk act on this computer</span></label>
+              <label class="switch"><input type="checkbox" id="setup-screen"><span>Send a screenshot with each new question</span></label>
+              <label class="switch"><input type="checkbox" id="setup-autostart"><span>Start with Windows (needed for schedules)</span></label>
+            </section>
+
+            <div id="setup-msg" class="wide" hidden></div>
+            <div class="row wide">
+              <span class="spacer"></span>
+              <button type="button" id="setup-later">Later</button>
+              <button type="button" id="setup-done" class="primary">Start using Agent Desk</button>
+            </div>
+          </div>
+
           <form id="settings" hidden>
             <section>
               <h3>Voice and wake</h3>
@@ -180,6 +240,7 @@
             </details>
             <div id="settings-msg" class="wide" hidden></div>
             <div class="row wide">
+              <button type="button" id="open-setup" class="small">Setup and guide</button>
               <span class="spacer"></span>
               <button type="button" id="settings-cancel">Cancel</button>
               <button type="submit" class="primary">Save</button>

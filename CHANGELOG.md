@@ -21,9 +21,27 @@ the release workflow uses that section as the GitHub Release notes.
   "remind me at 5 to send the report". Manage them in Settings → Schedules.
 - Settings → Actions: turn actions off, undo "Always allow", and save
   commands the AI may run by name.
+- Full desktop control: Agent Desk can see the buttons, links and text
+  boxes in any app (including web pages in your own browser), move the
+  mouse pointer visibly and click, fill in text, scroll, use the clipboard,
+  open files and folders, read text, Word and PDF documents, and attach a
+  file in Teams, Slack or Outlook in one step. Clicking Send, Delete, Buy
+  and the like waits for your OK, button by button.
+- Browser profiles: it asks once which Chrome, Edge or Brave profile to use
+  and remembers it (reset it in Settings).
+- A setup screen on first launch (and from the tray, "Setup and guide"):
+  checks that Claude Code or Codex is installed and signed in, shows the
+  account and plan, copies the sign-in command, lets you pin one account
+  folder, picks the model from the CLI's own list, shows which speech
+  models are downloaded with live download progress, and explains how to
+  use everything.
 
 ### Changed
 
+- Faster actions: clicks, typing and attachments hand back what is on
+  screen straight away, so the AI needs fewer round trips.
+- Lighter when hidden: the notch and glow web views are asked to release
+  memory while they are not shown.
 - Claude and Codex now get Agent Desk's own actions as tools (through a
   local MCP server). They still get none of their own tools, and for Codex
   your apps, plugins and MCP servers are switched off during these runs.

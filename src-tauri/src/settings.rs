@@ -54,6 +54,13 @@ pub struct Settings {
     /// The browser profile chosen once per browser ("chrome" → "projects"),
     /// used from then on without asking again.
     pub browser_profiles: std::collections::BTreeMap<String, String>,
+    /// Use only this Claude sign-in: its config folder (CLAUDE_CONFIG_DIR).
+    /// Empty means the usual one in the user's home folder.
+    pub claude_config_dir: String,
+    /// Use only this Codex sign-in: its home folder (CODEX_HOME).
+    pub codex_home: String,
+    /// The setup screen has been completed once.
+    pub setup_done: bool,
 }
 
 impl Default for Settings {
@@ -88,6 +95,9 @@ impl Default for Settings {
             always_allow: Vec::new(),
             commands: Vec::new(),
             browser_profiles: Default::default(),
+            claude_config_dir: String::new(),
+            codex_home: String::new(),
+            setup_done: false,
         }
     }
 }

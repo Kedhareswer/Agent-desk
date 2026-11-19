@@ -233,6 +233,138 @@ fn resolve_target(app: &AppHandle, target: Target) -> Result<(i32, i32, String),
     }
 }
 
+/// List what is on screen in a window, remember the numbers for clicks,
+/// and describe it for the AI. Returns the text and how many were found.
+fn read_screen(
+    app: &AppHandle,
+    hwnd: isize,
+    query: &str,
+    limit: usize,
+) -> Result<(String, usize), String> {
+    let state = app.state::<App>();
+    let list = uia::list_elements(hwnd, query, limit)?;
+    let front = if hwnd == 0 {
+        platform::foreground().hwnd
+    } else {
+        hwnd
+    };
+    let title = platform::list_windows()
+        .into_iter()
+        .find(|w| w.0 == front)
+        .map(|w| w.1)
+        .unwrap_or_default();
+    let mut text = format!(
+        "In \"{title}\" ({} found). Click by number.
+",
+        list.len()
+    );
+    for e in &list {
+        let value = if e.value.is_empty() || e.value == e.name {
+            String::new()
+        } else {
+            format!(" = \"{}\"", e.value)
+        };
+        text.push_str(&format!(
+            "{}. {} \"{}\"{value}
+",
+            e.id, e.kind, e.name
+        ));
+    }
+    if list.is_empty() {
+        text.push_str("Nothing matched. Try without a query, or use look_at_screen.");
+    }
+    let count = list.len();
+    *state.elements.lock().unwrap() = (list, Some(std::time::Instant::now()));
+    Ok((text, count))
+}
+
+/// After a click or typing: wait for the screen to settle, then describe
+/// the window in front (a dialog or menu that just opened included).
+fn after_step(app: &AppHandle, done: &str) -> String {
+    std::thread::sleep(Duration::from_millis(500));
+    let ours = overlay(app).map(|w| own_hwnd(&w)).unwrap_or(0);
+    let front = platform::foreground().hwnd;
+    if front == ours || front == 0 {
+        return done.to_string();
+    }
+    match read_screen(app, front, "", 80) {
+        Ok((text, _)) => format!(
+            "{done} The screen now:
+{text}"
+        ),
+        Err(_) => done.to_string(),
+    }
+}
+
+/// Click a listed element: glide, click, short pause.
+fn click_element(e: &uia::Element) {
+    uia::glide_to(e.x, e.y);
+    std::thread::sleep(Duration::from_millis(60));
+    uia::click(false, false);
+    std::thread::sleep(Duration::from_millis(300));
+}
+
+/// Wait up to `ms` for an element matching `test` in the window in front.
+fn wait_for(ms: u64, query: &str, test: impl Fn(&uia::Element) -> bool) -> Option<uia::Element> {
+    let until = std::time::Instant::now() + Duration::from_millis(ms);
+    loop {
+        if let Ok(list) = uia::list_elements(0, query, 60) {
+            if let Some(e) = list.into_iter().find(|e| test(e)) {
+                return Some(e);
+            }
+        }
+        if std::time::Instant::now() >= until {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// Attach a file through the app's own attach button and the standard
+/// Windows Open dialog, as a person would.
+fn attach(app: &AppHandle, file: &Path) -> Result<(), String> {
+    let ours = overlay(app).map(|w| own_hwnd(&w)).unwrap_or(0);
+    if platform::foreground().hwnd == ours {
+        if let Some(t) = Some(*app.state::<App>().target.lock().unwrap()).filter(|t| *t != 0) {
+            platform::focus_window(t);
+        }
+    }
+    let is_name_box =
+        |e: &uia::Element| e.kind == "edit" && e.name.to_lowercase().starts_with("file name");
+    let button = wait_for(1500, "", |e| {
+        uia::is_attach_label(&e.name) && e.kind != "edit"
+    })
+    .ok_or("No attach button found in the app in front. Open the chat or email first.")?;
+    click_element(&button);
+    // Some apps open the file dialog straight away; others show a menu.
+    if wait_for(1200, "file name", is_name_box).is_none() {
+        let upload = wait_for(1500, "", |e| uia::is_local_upload_label(&e.name))
+            .ok_or("The attach menu has no \"upload from this device\" choice.")?;
+        click_element(&upload);
+    }
+    let name_box =
+        wait_for(6000, "file name", is_name_box).ok_or("The Open dialog did not appear.")?;
+    uia::glide_to(name_box.x, name_box.y);
+    uia::click(false, false);
+    std::thread::sleep(Duration::from_millis(150));
+    if let Ok(all) = actions::parse_keys("Ctrl+A") {
+        platform::press_keys(&all);
+    }
+    platform::type_text(&file.display().to_string(), true);
+    std::thread::sleep(Duration::from_millis(200));
+    let open = wait_for(1500, "open", |e| {
+        e.kind == "button" || e.kind == "split button"
+    })
+    .filter(|e| {
+        e.name.trim().eq_ignore_ascii_case("open") || e.name.trim().eq_ignore_ascii_case("&open")
+    })
+    .ok_or("The Open dialog has no Open button.")?;
+    click_element(&open);
+    // Let the app take the file before describing the screen.
+    std::thread::sleep(Duration::from_millis(1200));
+    Ok(())
+}
+
 fn home() -> PathBuf {
     PathBuf::from(
         std::env::var("USERPROFILE")
@@ -470,26 +602,8 @@ fn execute(
                     front
                 }
             };
-            let list = uia::list_elements(hwnd, query, 150)?;
-            let title = platform::list_windows()
-                .into_iter()
-                .find(|w| w.0 == hwnd)
-                .map(|w| w.1)
-                .unwrap_or_default();
-            let mut text = format!("In \"{title}\" ({} found). Click by number.\n", list.len());
-            for e in &list {
-                let value = if e.value.is_empty() || e.value == e.name {
-                    String::new()
-                } else {
-                    format!(" = \"{}\"", e.value)
-                };
-                text.push_str(&format!("{}. {} \"{}\"{value}\n", e.id, e.kind, e.name));
-            }
-            if list.is_empty() {
-                text.push_str("Nothing matched. Try without a query, or use look_at_screen.");
-            }
-            let note = format!("{} found", list.len());
-            *state.elements.lock().unwrap() = (list, Some(std::time::Instant::now()));
+            let (text, count) = read_screen(app, hwnd, query, 150)?;
+            let note = format!("{count} found");
             Ok((mcp::ToolResult::text(text), note))
         }
         Action::Click { right, double, .. } => {
@@ -497,8 +611,12 @@ fn execute(
             uia::glide_to(x, y);
             std::thread::sleep(Duration::from_millis(60));
             uia::click(*right, *double);
-            std::thread::sleep(Duration::from_millis(250));
-            done("Clicked.")
+            // Hand back what the screen shows now, so the AI does not need
+            // a separate look before its next step.
+            Ok((
+                mcp::ToolResult::text(after_step(app, "Clicked.")),
+                String::new(),
+            ))
         }
         Action::Fill { text, .. } => {
             let (x, y) = point.ok_or("Nowhere to type.")?;
@@ -510,7 +628,10 @@ fn execute(
                 platform::press_keys(&all);
             }
             platform::type_text(text, true);
-            done("Typed.")
+            Ok((
+                mcp::ToolResult::text(after_step(app, "Typed.")),
+                String::new(),
+            ))
         }
         Action::Scroll { lines, horizontal } => {
             uia::scroll(*lines, *horizontal);
@@ -577,6 +698,17 @@ fn execute(
                     full.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default()
                 )),
             }
+        }
+        Action::AttachFile { path } => {
+            let full = checked_path(path)?;
+            if full.is_dir() {
+                return Err(format!("{} is a folder; attach a file.", full.display()));
+            }
+            attach(app, &full)?;
+            Ok((
+                mcp::ToolResult::text(after_step(app, &format!("Attached {}.", full.display()))),
+                String::new(),
+            ))
         }
         Action::CopyToClipboard { text } => {
             arboard::Clipboard::new()

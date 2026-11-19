@@ -10,6 +10,7 @@ const el = {
   stop: $("stop"), openSettings: $("open-settings"), close: $("close"),
   panel: $("panel"), notice: $("notice"), thread: $("thread"), actions: $("actions"),
   insert: $("insert"), copy: $("copy"), newChat: $("new-chat"), stat: $("stat"),
+  setup: $("setup"),
   settings: $("settings"), settingsMsg: $("settings-msg"), shortcutInput: $("shortcut-input"), settingsCancel: $("settings-cancel"), opacityOut: $("opacity-out"),
 };
 
@@ -129,7 +130,7 @@ function applyLook() {
 /* ---------- panel ---------- */
 
 function refreshPanel() {
-  const settingsOpen = !el.settings.hidden;
+  const settingsOpen = !el.settings.hidden || !el.setup.hidden;
   const hasThread = [...el.thread.children].some((n) => !n.hidden && !n.classList.contains("current"));
   const hasAnswer = !state.busy && state.answer.trim().length > 0;
   el.thread.hidden = !hasThread || settingsOpen;
@@ -209,7 +210,7 @@ function flash(text) {
 function beginTurn(shown, quiet = false) {
   if (state.startFresh) clearThread();
   if (!quiet) showNotice("");
-  if (!el.settings.hidden && !quiet) closeSettings();
+  if (!quiet) closeOverlays();
   // The notch's top line already shows the current question, so only
   // earlier questions are listed in the conversation.
   el.thread.querySelector(".msg.user.current")?.classList.remove("current");
@@ -518,6 +519,197 @@ function acceleratorFrom(e) {
   return [...mods, key].join("+");
 }
 
+/* ---------- first-run setup ---------- */
+
+// The setup screen asks the app (and through it the CLIs) for the facts:
+// is the tool installed, who is signed in, which models, which speech
+// models are downloaded. Nothing is saved until "Start using Agent Desk".
+const setup = { info: null, models: {}, provider: "claude", modelPick: {} };
+
+function closeOverlays() {
+  if (!el.settings.hidden) closeSettings();
+  if (!el.setup.hidden) closeSetup();
+}
+
+async function openSetup() {
+  if (!el.settings.hidden) closeSettings();
+  const s = state.settings;
+  setup.provider = s.provider;
+  setup.modelPick = { claude: s.claude_model, codex: s.codex_model };
+  $("setup-provider").value = s.provider;
+  $("setup-actions").checked = s.actions_enabled;
+  $("setup-screen").checked = s.include_screen;
+  $("setup-autostart").checked = s.autostart;
+  $("setup-msg").hidden = true;
+  showAccountField();
+  el.setup.hidden = false;
+  refreshPanel();
+  await invoke("focus");
+  checkSetup();
+}
+
+function closeSetup() {
+  el.setup.hidden = true;
+  refreshPanel();
+}
+
+function showAccountField() {
+  const s = state.settings;
+  const codex = setup.provider === "codex";
+  $("setup-account").value = codex ? s.codex_home : s.claude_config_dir;
+  $("setup-account").placeholder = codex ? "Your usual Codex sign-in (~/.codex)" : "Your usual Claude sign-in (~/.claude)";
+}
+
+function setCheck(id, ok, title, detail) {
+  const row = $(id);
+  row.dataset.ok = ok;
+  row.querySelector("b").textContent = title;
+  row.querySelector("small").textContent = detail || "";
+}
+
+async function checkSetup() {
+  $("setup-checking").textContent = "Checking…";
+  setCheck("check-cli", "wait", "Command-line tool", "Looking for it…");
+  setCheck("check-account", "wait", "Signed in", "Asking the tool…");
+  try {
+    setup.info = await invoke("setup_info");
+  } catch (err) {
+    setup.info = null;
+    $("setup-checking").textContent = String(err);
+    return;
+  }
+  $("setup-checking").textContent = "";
+  renderSetupChecks();
+  renderSpeech();
+  loadModels(setup.provider);
+}
+
+function renderSetupChecks() {
+  if (!setup.info) return;
+  const cli = setup.info[setup.provider];
+  const name = setup.provider === "codex" ? "Codex CLI" : "Claude Code";
+  const version = (cli.version || "").replace(/\(.*?\)/g, "").replace(/^codex-cli\s*/i, "").trim();
+  if (cli.found) setCheck("check-cli", "yes", `${name} ${version}`.trim(), cli.path);
+  else setCheck("check-cli", "no", `${name} is not installed`, cli.problem);
+  if (!cli.found) setCheck("check-account", "no", "Signed in", "Install it first.");
+  else if (cli.signed_in) {
+    const plan = cli.plan ? ` · ${cli.plan} plan` : "";
+    setCheck("check-account", "yes", `Signed in${cli.account ? " as " + cli.account : ""}${plan}`, `Sign-in kept in ${cli.config_dir}`);
+  } else setCheck("check-account", "no", "Not signed in", `Copy the sign-in command, run it in a terminal, then press Check again.`);
+  $("copy-signin").hidden = cli.found && cli.signed_in;
+  $("copy-signin").dataset.command = cli.sign_in_command;
+}
+
+async function loadModels(provider) {
+  const select = $("setup-model");
+  if (!setup.models[provider]) {
+    select.innerHTML = "<option>Loading models from the CLI…</option>";
+    select.disabled = true;
+    try { setup.models[provider] = await invoke("list_models", { provider }); } catch { setup.models[provider] = []; }
+    select.disabled = false;
+  }
+  if (provider !== setup.provider) return;
+  const list = setup.models[provider];
+  select.innerHTML = "";
+  if (provider === "codex") select.add(new Option("Your Codex default", ""));
+  for (const m of list) select.add(new Option(m.name, m.id));
+  select.value = setup.modelPick[provider] ?? "";
+  if (select.selectedIndex < 0) select.selectedIndex = 0;
+  showModelDesc();
+}
+
+function showModelDesc() {
+  const id = $("setup-model").value;
+  const m = (setup.models[setup.provider] || []).find((x) => x.id === id);
+  $("model-desc").textContent = m ? m.description : id ? "" : "Whatever your Codex CLI is set to use.";
+}
+
+function renderSpeech() {
+  const box = $("speech-list");
+  box.innerHTML = "";
+  const current = setup.voicePick || state.settings.voice_model;
+  for (const m of setup.info?.speech || []) {
+    const row = document.createElement("label");
+    row.className = "speech-row";
+    row.dataset.model = m.id;
+    const radio = Object.assign(document.createElement("input"), { type: "radio", name: "setup-voice", value: m.id, checked: m.id === current });
+    radio.addEventListener("change", () => (setup.voicePick = m.id));
+    const text = document.createElement("div");
+    text.innerHTML = `<div></div><div class="bar" hidden><i></i></div>`;
+    text.firstChild.textContent = `${m.label} · ${m.size_mb} MB`;
+    const stateBox = document.createElement("div");
+    stateBox.className = "state";
+    row.append(radio, text, stateBox);
+    box.appendChild(row);
+    const downloading = setup.info.downloading === m.id;
+    setSpeechState(m.id, m.downloaded ? "done" : downloading ? setup.info.download_pct : m.partial ? `paused:${m.partial}` : "none");
+  }
+}
+
+// One speech model row: downloaded, downloading (a number), paused, or not yet.
+function setSpeechState(id, st) {
+  const row = $("speech-list").querySelector(`[data-model="${id}"]`);
+  if (!row) return;
+  const box = row.querySelector(".state");
+  const bar = row.querySelector(".bar");
+  box.className = "state";
+  box.innerHTML = "";
+  bar.hidden = true;
+  if (st === "done") {
+    box.textContent = "Downloaded";
+    box.classList.add("ok");
+  } else if (typeof st === "number") {
+    box.textContent = `Downloading ${st}%`;
+    bar.hidden = false;
+    bar.firstChild.style.width = st + "%";
+  } else {
+    const pct = String(st).startsWith("paused:") ? Number(String(st).slice(7)) : 0;
+    const b = Object.assign(document.createElement("button"), { type: "button", className: "small", textContent: pct ? `Resume (${pct}%)` : "Download" });
+    b.addEventListener("click", async (e) => {
+      e.preventDefault();
+      try {
+        await invoke("download_speech", { model: id });
+        setSpeechState(id, pct);
+      } catch (err) {
+        box.textContent = String(err);
+      }
+    });
+    box.appendChild(b);
+  }
+}
+
+async function finishSetup(save) {
+  const next = { ...state.settings, setup_done: true };
+  if (save) {
+    next.provider = setup.provider;
+    const model = $("setup-model").value;
+    if (setup.provider === "codex") {
+      next.codex_model = model;
+      next.codex_home = $("setup-account").value.trim();
+    } else {
+      if (model) next.claude_model = model;
+      next.claude_config_dir = $("setup-account").value.trim();
+    }
+    next.voice_model = setup.voicePick || next.voice_model;
+    next.actions_enabled = $("setup-actions").checked;
+    next.include_screen = $("setup-screen").checked;
+    next.autostart = $("setup-autostart").checked;
+  }
+  try {
+    const warning = await saveSettings(next);
+    if (warning) {
+      $("setup-msg").textContent = warning;
+      $("setup-msg").hidden = false;
+      return;
+    }
+    closeSetup();
+    focusPrompt();
+  } catch (err) {
+    $("setup-msg").textContent = String(err);
+    $("setup-msg").hidden = false;
+  }
+}
+
 /* ---------- actions and schedules in settings ---------- */
 
 function describeAllow(key) {
@@ -685,6 +877,31 @@ el.insert.addEventListener("click", insertAnswer);
 el.copy.addEventListener("click", copyAnswer);
 el.openSettings.addEventListener("click", () => (el.settings.hidden ? openSettings() : closeSettings()));
 el.settingsCancel.addEventListener("click", closeSettings);
+$("open-setup").addEventListener("click", openSetup);
+$("setup-provider").addEventListener("change", (e) => {
+  setup.modelPick[setup.provider] = $("setup-model").value;
+  setup.provider = e.target.value;
+  showAccountField();
+  renderSetupChecks();
+  loadModels(setup.provider);
+});
+$("setup-model").addEventListener("change", () => {
+  setup.modelPick[setup.provider] = $("setup-model").value;
+  showModelDesc();
+});
+$("setup-check").addEventListener("click", () => {
+  // A changed account folder only counts once saved, so save it first.
+  const key = setup.provider === "codex" ? "codex_home" : "claude_config_dir";
+  const value = $("setup-account").value.trim();
+  if (value !== state.settings[key]) saveSettings({ ...state.settings, [key]: value }).then(checkSetup);
+  else checkSetup();
+});
+$("copy-signin").addEventListener("click", async () => {
+  await invoke("copy_text", { text: $("copy-signin").dataset.command || "" });
+  $("setup-checking").textContent = "Sign-in command copied. Paste it into a terminal.";
+});
+$("setup-done").addEventListener("click", () => finishSetup(true));
+$("setup-later").addEventListener("click", () => finishSetup(false));
 el.settings.elements.provider.addEventListener("change", showProviderFields);
 el.settings.elements.opacity.addEventListener("input", showOpacity);
 $("add-command").addEventListener("click", () => {
@@ -772,7 +989,8 @@ document.addEventListener("keydown", (e) => {
   }
   if (e.key === "Escape") {
     e.preventDefault();
-    if (!el.settings.hidden) closeSettings();
+    if (!el.setup.hidden) closeSetup();
+    else if (!el.settings.hidden) closeSettings();
     else if (state.busy && !state.quiet) stop();
     else invoke("hide");
   } else if (e.key === "Enter" && ctrl) {
@@ -865,7 +1083,7 @@ listen("phase", ({ payload }) => {
     state.levels.fill(0);
     pushLevel(0);
     showNotice("");
-    if (!el.settings.hidden) closeSettings();
+    closeOverlays();
     setPhase("listening", contextLine());
   } else if (phase === "transcribing") {
     setPhase("transcribing", "");
@@ -888,7 +1106,7 @@ listen("level", ({ payload }) => (state.phase === "listening" || state.phase ===
 listen("asked", ({ payload }) => {
   // A scheduled task is a conversation of its own.
   if (payload.scheduled) {
-    if (!el.settings.hidden) closeSettings();
+    closeOverlays();
     clearThread();
     showNotice("");
   }
@@ -903,7 +1121,7 @@ listen("live", ({ payload }) => {
   state.levels.fill(0);
   pushLevel(0);
   if (payload) {
-    if (!el.settings.hidden) closeSettings();
+    closeOverlays();
     clearThread();
     showNotice("");
     setPhase("live", "Listening to you and your screen");
@@ -926,6 +1144,17 @@ listen("notice", ({ payload }) => showNotice(payload));
 
 listen("insert-request", insertAnswer);
 listen("open-settings", openSettings);
+listen("open-setup", openSetup);
+listen("speech-progress", ({ payload }) => {
+  const { model, pct, done, error } = payload;
+  if (!setup.info) return;
+  if (done) {
+    const m = setup.info.speech.find((x) => x.id === model);
+    if (m && !error) m.downloaded = true;
+    setSpeechState(model, error ? "none" : "done");
+    if (error) $("setup-checking").textContent = error;
+  } else setSpeechState(model, pct);
+});
 listen("settings-changed", ({ payload }) => {
   state.settings = payload;
   applyLook();

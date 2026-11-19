@@ -47,7 +47,7 @@ The answer appears in a small notch at the edge of your screen.
 | 🎙️ **Hold to talk** | Hold <kbd>Ctrl</kbd> + <kbd>Alt</kbd>, speak, release. No Enter key. |
 | ⌨️ **Tap to type** | A quick tap opens the same notch with a text box. |
 | 🤝 **Work with me (live mode)** | <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>L</kbd> follows a call or a session and speaks up only when it can help, for example when someone asks a question. |
-| 🖱️ **Does things for you** | "Open Chrome and go to GitHub", "switch to Outlook", "type my address". Every step shows in the notch; anything that sends, deletes, buys or runs a command waits for your OK. |
+| 🖱️ **Does things for you** | "Open Chrome and go to GitHub", "attach the report from Documents and send it to my team in Teams". It sees buttons and links by name, moves the pointer visibly, clicks, types, reads Word and PDF files. Every step shows in the notch; anything that sends, deletes, buys or runs a command waits for your OK. |
 | ⏰ **Schedules** | "Every weekday at 9, open my calendar and summarise today." "Remind me at 5 to send the report." Pause, edit or delete them in Settings. |
 | 📋 **Paste back** | <kbd>Ctrl</kbd> + <kbd>Enter</kbd> puts the answer into the app you came from. |
 | 🧩 **One notch** | It shows only its state (Listening, Thinking, Answering) and grows into the answer when there is something to read. |
@@ -123,28 +123,49 @@ is the fastest), the speech model (75 MB, 148 MB or 488 MB, larger is more
 accurate), the screen edge, transparency, whether a screenshot is sent,
 start with Windows, and automatic updates.
 
+### First launch
+
+The first time it starts, the notch opens on a setup screen. It checks
+that Claude Code (or the Codex CLI) is installed and signed in and shows
+the account and plan, copies the sign-in command if you need it, lets you
+pin one account folder so Agent Desk always uses that sign-in, picks the
+model from the CLI's own list, shows which speech models are downloaded
+(and downloads one with a progress bar), and explains how to use it. Open
+it again any time from the tray: **Setup and guide**.
+
 ### Actions
 
 Agent Desk can do things on your computer, not just answer. Ask for it the
 way you would ask a person:
 
-- "Open Chrome and go to GitHub."
-- "Open Spotify." / "Switch to the Word document."
-- "Type my out-of-office message." / "Press Ctrl+T."
-- "Run *Build site*" (a command you saved in Settings).
+- "Open Chrome and go to GitHub." / "Open my Gmail in Chrome" (it asks once
+  which profile, then remembers).
+- "Open Spotify." / "Switch to the Word document." / "Open my Downloads folder."
+- "Read the update in Documents\Reports and tell me what is blocked."
+- "Write a summary of that document in my Teams chat with Sam and attach it."
+- "Press Ctrl+T." / "Run *Build site*" (a command you saved in Settings).
 
-It has a short, fixed list of actions: open a web page, open an app from
-the Start menu, switch to a window, type text, press a shortcut, run a
-command you saved, look at the screen again, wait, and schedule a task.
-It has no shell and cannot run anything else.
+It works like a person at the keyboard: it reads the buttons, links and
+text boxes of the app in front by name (Windows' accessibility interface,
+the one screen readers use, which also sees inside web pages), moves the
+mouse pointer so you can see where it is going, clicks, types, scrolls,
+uses the clipboard, opens files and folders, and reads text, Word and PDF
+documents. It works in your own signed-in browser and profile. It has no
+shell: only this fixed list, plus commands you saved yourself.
 
 Each step appears in the notch before it runs. Steps that could send,
 delete, buy or run something wait for you: **Allow** (or <kbd>Enter</kbd>),
-**Always allow** (that type of step stops asking; undo it in Settings), or
-**Don't** (or <kbd>Esc</kbd>). Typing that ends in Enter, keys such as
-Enter, Delete or Ctrl+W, saved commands and new schedules always ask.
-Opening pages and apps, switching windows and moving around with Tab or the
-arrow keys just run.
+**Always allow** (stops asking for that kind of step, or for that one
+button; undo it in Settings), or **Don't** (or <kbd>Esc</kbd>). Clicking a
+button such as Send, Post, Delete, Buy, Pay or Submit, pressing Enter,
+Delete or Ctrl+W, opening a program, saved commands and new schedules
+always ask. Reading the screen, opening pages, apps and documents, clicking
+ordinary buttons and links, and typing into a box (new lines are typed
+without sending) just run. Folders that hold keys and app data (`.ssh`,
+`AppData`, `.env` files) are never read.
+
+Attaching a file in Teams or OneDrive-backed apps uploads it to your cloud
+storage as soon as it is attached, before you press Send.
 
 The AI is told never to act on instructions it finds on your screen or in
 a web page, and the confirmations above are there in case it does. Actions
@@ -223,6 +244,9 @@ Found a security problem? Please report it privately (see
 | Tray, windows, commands, push-to-talk and live mode | [`src-tauri/src/main.rs`](src-tauri/src/main.rs) |
 | Claude and Codex CLI bridge | [`src-tauri/src/backend.rs`](src-tauri/src/backend.rs) |
 | The allowed actions and their rules | [`src-tauri/src/actions.rs`](src-tauri/src/actions.rs) |
+| Seeing the screen, mouse, Start-menu apps, PDF pages | [`src-tauri/src/uia.rs`](src-tauri/src/uia.rs) |
+| Folders and documents, off-limits paths | [`src-tauri/src/files.rs`](src-tauri/src/files.rs) |
+| Setup screen facts (sign-in, models, speech models) | [`src-tauri/src/setup.rs`](src-tauri/src/setup.rs) |
 | Local MCP server the CLIs call actions through | [`src-tauri/src/mcp.rs`](src-tauri/src/mcp.rs) |
 | Carrying out actions, confirmations, running schedules | [`src-tauri/src/tasks.rs`](src-tauri/src/tasks.rs) |
 | Schedule times and storage | [`src-tauri/src/schedule.rs`](src-tauri/src/schedule.rs) |

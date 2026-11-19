@@ -59,13 +59,15 @@ they did not and the site depends on which account is signed in (mail, chat, cal
 tools), call list_browser_profiles. If it says the user already chose one, use it without \
 asking; if not and there is more than one, ask the user which one (list the names) and stop \
 until they answer. Their choice is remembered, so they are asked only once per browser.
-- To work inside an app or page: call find_on_screen (optionally with a word to look for) and \
-click or fill by element number. Only if the control is not listed, use look_at_screen and click \
-by x/y in that screenshot. After a step that changes the screen, look again before the next one.
+- Be quick: every extra step costs the user a second or two. To work inside an app or page, call \
+find_on_screen (optionally with a word to look for) and click or fill by element number. click, \
+fill and attach_file already return what the screen shows afterwards, so do not look again \
+before the next step. Use look_at_screen only when a control is not listed or you must read \
+what is shown, and wait only when something is still loading.
 - Files: paths can be relative to the user's home folder (Documents\\Reports). Use list_folder to \
 find a document and read_file to read it (text, Word, PDF).
-- To attach a file in a chat or email app: click its attach or paperclip button, choose upload \
-from this device, fill the file name box of the Open dialog with the full path, then click Open.
+- To attach a file in a chat or email app, open the right chat or draft and call attach_file \
+with the path; it does the whole attach dialog in one step.
 - To paste text: copy_to_clipboard, then press_keys Ctrl+V.
 - Every step is shown to the user, and the mouse pointer visibly moves. Steps that send, post, \
 delete, buy or run something wait for their OK (clicking Send, Delete, Buy..., typing Enter, \
@@ -112,6 +114,8 @@ type Emit = Arc<dyn Fn(AiEvent) + Send + Sync>;
 #[derive(Debug, PartialEq)]
 pub enum Parsed {
     Delta(String),
+    /// The model the CLI started with.
+    Model(String),
     /// The model stopped to use a tool and will go on afterwards.
     Pause,
     Done,
@@ -142,6 +146,10 @@ pub fn parse_claude_line(line: &str) -> Parsed {
                 _ => Parsed::Ignore,
             }
         }
+        Some("system") if v["subtype"] == "init" => match v["model"].as_str() {
+            Some(m) => Parsed::Model(m.to_string()),
+            None => Parsed::Ignore,
+        },
         Some("result") if v["is_error"].as_bool() == Some(true) => {
             let msg = v["result"]
                 .as_str()
@@ -246,6 +254,11 @@ struct State {
 
 pub struct Engine {
     data_dir: PathBuf,
+    /// The sign-in folders to use: (Claude config dir, Codex home). Empty
+    /// means the CLI's usual one.
+    accounts: Mutex<(String, String)>,
+    /// The full model name the Claude CLI reported for the running process.
+    resolved_model: Arc<Mutex<String>>,
     tool_server: Mutex<Option<ToolServer>>,
     emit: Emit,
     state: Arc<Mutex<State>>,
@@ -330,6 +343,8 @@ impl Engine {
     pub fn new(data_dir: PathBuf, emit: Emit) -> Self {
         Self {
             data_dir,
+            accounts: Mutex::new((String::new(), String::new())),
+            resolved_model: Arc::new(Mutex::new(String::new())),
             tool_server: Mutex::new(None),
             emit,
             state: Arc::new(Mutex::new(State::default())),
@@ -351,6 +366,25 @@ impl Engine {
             return None;
         }
         self.tool_server.lock().ok()?.clone()
+    }
+
+    /// Use only these sign-ins. A change starts a new Claude process.
+    pub fn set_accounts(&self, claude_dir: &str, codex_home: &str) {
+        if let Ok(mut a) = self.accounts.lock() {
+            *a = (claude_dir.trim().to_string(), codex_home.trim().to_string());
+        }
+    }
+
+    fn accounts(&self) -> (String, String) {
+        self.accounts.lock().map(|a| a.clone()).unwrap_or_default()
+    }
+
+    /// The model the Claude CLI said it is using, e.g. "claude-haiku-5-5".
+    pub fn resolved_model(&self) -> String {
+        self.resolved_model
+            .lock()
+            .map(|m| m.clone())
+            .unwrap_or_default()
     }
 
     /// The turn whose answer is being produced (or was last produced).
@@ -385,6 +419,10 @@ impl Engine {
             .map_err(|e| e.to_string())?;
 
         let mut cmd = command(&program);
+        let (claude_dir, _) = self.accounts();
+        if !claude_dir.is_empty() {
+            cmd.env("CLAUDE_CONFIG_DIR", &claude_dir);
+        }
         cmd.current_dir(&workdir)
             .args([
                 "-p",
@@ -447,7 +485,9 @@ impl Engine {
             self.turn.clone(),
             self.busy.clone(),
         );
+        let resolved_model = self.resolved_model.clone();
         std::thread::spawn(move || {
+            let resolved = resolved_model;
             // Text written after an action starts a new paragraph.
             let (mut wrote, mut gap) = (0u64, false);
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -468,6 +508,11 @@ impl Engine {
                         })
                     }
                     Parsed::Pause => gap = true,
+                    Parsed::Model(m) => {
+                        if let Ok(mut r) = resolved.lock() {
+                            *r = m;
+                        }
+                    }
                     Parsed::Done => {
                         busy.store(false, Ordering::SeqCst);
                         emit(AiEvent {
@@ -513,7 +558,10 @@ impl Engine {
             child,
             stdin,
             alive,
-            key: claude_key(model, path, live, server.is_some()),
+            key: format!(
+                "{}|{claude_dir}",
+                claude_key(model, path, live, server.is_some())
+            ),
         })
     }
 
@@ -526,7 +574,11 @@ impl Engine {
         tools: bool,
     ) -> Result<&'a mut ClaudeProc, String> {
         let tools = self.tool_server(tools, live).is_some();
-        let key = claude_key(model, path, live, tools);
+        let key = format!(
+            "{}|{}",
+            claude_key(model, path, live, tools),
+            self.accounts().0
+        );
         let usable = state
             .claude
             .as_ref()
@@ -607,6 +659,10 @@ impl Engine {
         let program = resolve_cli("codex", &ask.codex_path)?;
         let workdir = self.workdir();
         let mut cmd = command(&program);
+        let (_, codex_home) = self.accounts();
+        if !codex_home.is_empty() {
+            cmd.env("CODEX_HOME", &codex_home);
+        }
         cmd.current_dir(&workdir).arg("exec");
 
         // Live mode and normal use are separate conversations.
@@ -632,7 +688,10 @@ impl Engine {
             "sandbox_mode=read-only",
         ]);
         if let Some(server) = &server {
-            let home = std::env::var("CODEX_HOME")
+            let home = Some(codex_home.clone())
+                .filter(|h| !h.is_empty())
+                .ok_or(())
+                .or_else(|_| std::env::var("CODEX_HOME"))
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| {
                     PathBuf::from(
@@ -700,7 +759,7 @@ impl Engine {
                             text: explain(&text),
                         });
                     }
-                    Parsed::Pause | Parsed::Ignore => {}
+                    Parsed::Pause | Parsed::Model(_) | Parsed::Ignore => {}
                 }
             }
             let mut detail = String::new();
@@ -849,6 +908,10 @@ mod tests {
         assert_eq!(
             parse_claude_line(r#"{"type":"system","subtype":"init"}"#),
             Parsed::Ignore
+        );
+        assert_eq!(
+            parse_claude_line(r#"{"type":"system","subtype":"init","model":"claude-haiku-5-5"}"#),
+            Parsed::Model("claude-haiku-5-5".into())
         );
     }
 

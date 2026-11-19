@@ -23,6 +23,7 @@ const fake = () => {
     voice_model: "base.en", dock_edge: "top", dock_along: 0.5, opacity: 0.92, edge_glow: true,
     live_shortcut: "Ctrl+Alt+L", live_system_audio: true, auto_update: true,
     actions_enabled: true, always_allow: ["press_keys"], commands: [], browser_profiles: { chrome: "projects" },
+    claude_config_dir: "", codex_home: "", setup_done: true,
   };
   const view = (s) => ({ ...s, describe: s.when.kind === "once" ? `once, ${s.when.date} ${s.when.time}` : `at ${s.when.time}`, next: s.paused ? "" : "soon", last: "" });
   let schedules = [{ id: 1, name: "Morning brief", prompt: "Open my calendar and summarise today", paused: false, last_run: null, created: 0,
@@ -40,6 +41,19 @@ const fake = () => {
         if (cmd === "get_settings") return settings;
         if (cmd === "save_settings") { settings = args.settings; return { settings, warning: null }; }
         if (cmd === "status") return { provider: settings.provider, cli_found: window.__fake.cliFound, detail: window.__fake.cliFound ? "C:/claude.exe" : "The `claude` command was not found.", hook_supported: true, voice_model_ready: true };
+        if (cmd === "setup_info") return {
+          provider: settings.provider, hook_supported: true, downloading: null, download_pct: 0,
+          claude: { found: true, path: "C:/Users/sam/.local/bin/claude.exe", version: "2.1.327 (Claude Code)", signed_in: true, account: "sam@example.com", plan: "max", config_dir: "C:/Users/sam/.claude", sign_in_command: "claude auth login", problem: "" },
+          codex: { found: true, path: "C:/codex.exe", version: "codex-cli 0.170.0", signed_in: false, account: "Not logged in", plan: "", config_dir: "C:/Users/sam/.codex", sign_in_command: "codex login", problem: "Not signed in." },
+          speech: [
+            { id: "tiny.en", label: "Tiny, English (fastest)", size_mb: 77, downloaded: false, partial: 0 },
+            { id: "base.en", label: "Base, English", size_mb: 147, downloaded: true, partial: 0 },
+            { id: "small.en", label: "Small, English (most accurate)", size_mb: 487, downloaded: false, partial: 40 },
+          ],
+        };
+        if (cmd === "list_models") return args.provider === "codex"
+          ? [{ id: "gpt-6.2-sol", name: "GPT-6.2-Sol", description: "Fast, go-to model." }, { id: "gpt-6.2-astra", name: "GPT-6.2-Astra", description: "Most capable." }]
+          : [{ id: "haiku", name: "Haiku", description: "Fastest. Best for voice. Now: claude-haiku-5-5." }, { id: "sonnet", name: "Sonnet", description: "Balanced." }, { id: "opus", name: "Opus", description: "Most capable." }];
         if (cmd === "list_schedules") return schedules;
         if (cmd === "save_schedule") {
           const item = { ...args.schedule, id: args.schedule.id || schedules.length + 1 };
@@ -368,6 +382,59 @@ const hidesBefore = (await calls("hide")).length;
 await emit("live", false);
 assert.equal((await calls("hide")).length, hidesBefore + 1);
 await wake(true);
+
+/* ----- first-run setup ----- */
+
+await emit("open-setup", null);
+await page.waitForSelector("#setup:not([hidden])");
+await page.waitForFunction(() => document.querySelector("#check-account").dataset.ok === "yes");
+assert.equal(await page.textContent("#check-cli b"), "Claude Code 2.1.327");
+assert.match(await page.textContent("#check-account"), /Signed in as sam@example\.com · max plan/);
+assert.ok(await page.isHidden("#copy-signin"), "no sign-in command needed when signed in");
+// Models come from the CLI, with what each is for.
+await page.waitForFunction(() => document.querySelectorAll("#setup-model option").length === 3);
+assert.equal(await page.inputValue("#setup-model"), "haiku");
+assert.match(await page.textContent("#model-desc"), /Now: claude-haiku-5-5/);
+// Speech models: downloaded, paused part-way, not yet.
+assert.equal(await page.textContent('.speech-row[data-model="base.en"] .state'), "Downloaded");
+assert.equal(await page.textContent('.speech-row[data-model="small.en"] .state'), "Resume (40%)");
+await page.click('.speech-row[data-model="tiny.en"] button');
+assert.deepEqual((await calls("download_speech")).at(-1), { model: "tiny.en" });
+await emit("speech-progress", { model: "tiny.en", pct: 34, done: false, error: "" });
+assert.equal(await page.textContent('.speech-row[data-model="tiny.en"] .state'), "Downloading 34%");
+assert.equal(await page.evaluate(() => document.querySelector('.speech-row[data-model="tiny.en"] .bar i').style.width), "34%");
+await snap("14-setup");
+await emit("speech-progress", { model: "tiny.en", pct: 100, done: true, error: "" });
+assert.equal(await page.textContent('.speech-row[data-model="tiny.en"] .state'), "Downloaded");
+// Codex: not signed in, so the sign-in command is offered for copying.
+await page.selectOption("#setup-provider", "codex");
+assert.equal(await page.getAttribute("#check-account", "data-ok"), "no");
+await page.click("#copy-signin");
+assert.deepEqual((await calls("copy_text")).at(-1), { text: "codex login" });
+await page.waitForFunction(() => document.querySelectorAll("#setup-model option").length === 3);
+assert.equal(await page.textContent("#setup-model option"), "Your Codex default");
+await page.selectOption("#setup-model", "gpt-6.2-sol");
+// Back to Claude, pick Sonnet, a separate account folder and the tiny voice.
+await page.selectOption("#setup-provider", "claude");
+await page.selectOption("#setup-model", "sonnet");
+await page.fill("#setup-account", "D:\\claude-work");
+await page.check('.speech-row[data-model="tiny.en"] input');
+await page.click("#setup-done");
+await page.waitForSelector("#setup", { state: "hidden" });
+const afterSetup = (await calls("save_settings")).at(-1).settings;
+assert.equal(afterSetup.setup_done, true);
+assert.equal(afterSetup.provider, "claude");
+assert.equal(afterSetup.claude_model, "sonnet");
+assert.equal(afterSetup.claude_config_dir, "D:\\claude-work");
+assert.equal(afterSetup.voice_model, "tiny.en");
+// Settings can reopen the guide.
+await page.keyboard.press("Control+,");
+await page.click("#open-setup");
+await page.waitForSelector("#setup:not([hidden])");
+await page.keyboard.press("Escape");
+assert.ok(await page.isHidden("#setup"));
+// Put things back for the settings checks below.
+await emit("settings-changed", { ...afterSetup, claude_model: "haiku", claude_config_dir: "", voice_model: "base.en" });
 
 /* ----- settings ----- */
 

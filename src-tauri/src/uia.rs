@@ -95,6 +95,37 @@ pub fn shape(raw: Vec<(i32, String, String, [i32; 4])>, query: &str, limit: usiz
     out
 }
 
+/// The control that attaches a file in chat and mail apps.
+pub fn is_attach_label(label: &str) -> bool {
+    let l = label.to_lowercase();
+    [
+        "attach",
+        "paperclip",
+        "add files",
+        "add a file",
+        "upload a file",
+        "insert file",
+    ]
+    .iter()
+    .any(|w| l.contains(w))
+}
+
+/// The menu choice that picks a file from this computer.
+pub fn is_local_upload_label(label: &str) -> bool {
+    let l = label.to_lowercase();
+    [
+        "this device",
+        "your computer",
+        "this computer",
+        "from computer",
+        "this pc",
+        "browse",
+    ]
+    .iter()
+    .any(|w| l.contains(w))
+        && !l.contains("cloud")
+}
+
 /// Labels on a button or link that mean "this sends, deletes, buys or
 /// otherwise commits something". Clicking one waits for the user's OK.
 pub fn is_consequential_label(label: &str) -> bool {
@@ -485,6 +516,17 @@ mod tests {
                 "Item 26", "Item 27", "Item 28", "Item 29"
             ]
         );
+    }
+
+    #[test]
+    fn attach_labels() {
+        assert!(is_attach_label("Attach files"));
+        assert!(is_attach_label("Attach"));
+        assert!(!is_attach_label("Send"));
+        assert!(is_local_upload_label("Upload from this device"));
+        assert!(is_local_upload_label("Upload from your computer"));
+        assert!(!is_local_upload_label("Attach cloud files"));
+        assert!(!is_local_upload_label("Browse cloud files"));
     }
 
     #[test]

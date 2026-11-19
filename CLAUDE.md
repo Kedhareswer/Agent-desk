@@ -23,7 +23,8 @@ asking:
 1. **Fast.** First words in about 1 to 3 seconds. Pre-warm, keep processes
    alive, never block on something that could start earlier.
 2. **Light.** Native Tauri app, not Electron. Idle cost is one small tray
-   process. AI process and speech model are released after a few idle
+   process (measured: ~20 MB for the app; the WebView2 processes behind the
+   notch are the larger part and are asked to release memory while hidden). AI process and speech model are released after a few idle
    minutes (`keep_warm_minutes`).
 3. **Out of the way.** No taskbar window. Never steal focus unless the user
    is typing. Collapsed, it is only the notch.
@@ -62,6 +63,17 @@ src-tauri/                  Rust (Tauri 2) – all system work
                             (show, confirm, execute), and the schedule loop
   src/schedule.rs           Pure: schedule times (local minute stamps),
                             due/next-run logic, schedules.json storage
+  src/uia.rs                Windows UI Automation (elements by name, also
+                            inside browser pages), element under a point,
+                            cursor glide/click/scroll, Start-menu apps incl.
+                            Store apps (shell:AppsFolder), PDF pages via
+                            Windows.Data.Pdf
+  src/files.rs              Folders and documents: list, read text/.docx,
+                            off-limits paths, which files run something
+  src/setup.rs              Setup screen facts from the CLIs: version,
+                            sign-in (`claude auth status --json`, `codex
+                            login status`), models (`codex debug models`),
+                            speech models on disk
   src/hotkey.rs             Low-level keyboard hook (Windows) + pure gesture
                             state machine (Down / Up(ms) / Cancel / Tap)
   src/audio.rs              Microphone recording, continuous Listener
@@ -102,7 +114,8 @@ bucket/agent-desk.json      Scoop manifest, written by the release workflow
 - **UI → Rust:** `invoke(...)` commands in `main.rs`: `get_settings`,
   `save_settings`, `status`, `ask`, `stop`, `new_chat`, `hide`, `resize`,
   `focus`, `copy_text`, `insert_text`, `answer_action`, `list_schedules`,
-  `save_schedule`, `delete_schedule`, `run_schedule_now`.
+  `save_schedule`, `delete_schedule`, `run_schedule_now`, `setup_info`,
+  `list_models`, `download_speech`.
 - **Rust → UI:** events emitted to the `main` window:
   - `ai` `{turn, kind: delta|done|error, text}` answer stream
   - `phase` `{phase: listening|transcribing|preparing|cancelled|error, text}`
@@ -114,6 +127,9 @@ bucket/agent-desk.json      Scoop manifest, written by the release workflow
     step; `status` is `ask` (show Allow / Always allow / Don't), `running`,
     `done`, `denied` or `failed`. Same turn rules as `ai`.
   - `schedules-changed` reload the list if Settings is open.
+  - `open-setup` show the setup screen (first launch until `setup_done`,
+    tray "Setup and guide", Settings button).
+  - `speech-progress` `{model, pct, done, error}` speech model download.
   - `wake` `{title, process, has_screen, typing}`, `refocus`, `level`
     (0–1 loudness), `live` (bool), `live-heard` `{who, text}`, `live-note`,
     `insert-request`, `open-settings`, `settings-changed`.
@@ -156,16 +172,42 @@ bucket/agent-desk.json      Scoop manifest, written by the release workflow
 ## Action rules
 
 - **Fixed allowlist** (`actions::tool_definitions`): `open_url` (http/https
-  only, optional chrome/edge/firefox), `open_app` (a Start-menu shortcut or
-  a few built-ins; names only, never paths), `focus_window`, `type_text`,
-  `press_keys` (one chord), `run_saved_command` (only commands the user
-  saved in Settings, by name), `look_at_screen`, `wait` (≤ 10 s),
-  `schedule_task`. Adding an action means: parse and check it in
+  only, optional chrome/edge/brave/firefox and profile),
+  `list_browser_profiles`, `open_app` (Start menu incl. Store apps; names
+  only, never paths), `focus_window`, `find_on_screen` (UI Automation
+  elements, numbered), `click` (element number or x/y in the last
+  screenshot; the cursor glides there visibly), `fill` (click a box,
+  replace its text; new lines are Shift+Enter), `scroll`, `type_text`,
+  `press_keys` (one chord), `open_path`, `list_folder`, `read_file`
+  (text, .docx, PDF as page images), `attach_file` (attach button → upload
+  from this device → Open dialog, in one step), `copy_to_clipboard`,
+  `read_clipboard`, `run_saved_command` (only commands the user saved in
+  Settings, by name), `look_at_screen`, `wait` (≤ 10 s), `schedule_task`.
+- **Clicks are judged by what is under the pointer**: the label is read
+  (element name, or `ElementFromPoint` for x/y) before asking. Labels like
+  Send, Post, Delete, Buy, Pay, Submit, Merge, Save (`uia::
+  is_consequential_label`) ask first; "Always allow" for a click is per
+  label (`click:send`).
+- **Speed**: every model round trip costs 1–2 s; a screenshot adds only
+  ~0.3–0.5 s and shrinking it does not help (measured). So `click`, `fill`
+  and `attach_file` return the fresh element list of the window in front,
+  and the prompt tells the model to use `look_at_screen` only as a last
+  resort.
+- **Files**: paths resolve from the user's home folder; `files::
+  is_off_limits` refuses `.ssh`, `AppData`, `.env*`, key files and the
+  Windows folder. Claude Code does not pass PDFs returned by an MCP tool to
+  the model (it saves them to disk), so PDFs are sent as page images.
+- **Browser profiles**: chosen once per browser and stored in
+  `browser_profiles`; Chrome cannot be driven through its remote debugging
+  protocol on the user's real profile, so the browser is driven through UI
+  Automation and input like any other app. Adding an action means: parse and check it in
   `actions.rs`, classify it in `needs_confirmation`, carry it out in
   `tasks::execute`, and add tests.
 - **Confirmation policy** (`Action::needs_confirmation`): asks first for
+  consequential clicks (above), opening a program or script,
   typing that contains a new line (Enter), every key chord except plain
-  navigation (Tab, arrows, Esc, Home/End, Page Up/Down, Ctrl+T/L/F/C/A,
+  navigation and editing (Tab, arrows, Esc, Home/End, Page Up/Down,
+  Ctrl+T/L/F/C/V/A/Z,
   Ctrl+Tab, Ctrl+1–9, Alt+Left/Right/Tab), every saved command, and every
   new schedule. The AI can mark any step `consequential` to ask too; it can
   never skip a question. "Always allow" stores `allow_key()` in
@@ -182,6 +224,20 @@ bucket/agent-desk.json      Scoop manifest, written by the release workflow
   `Origin` header (a web page). No HTTP or MCP library.
 - Typing and keys never go into the notch: `prepare_keyboard` refocuses the
   window the user came from (or the last `focus_window` target).
+
+## Setup screen
+
+- Shown inside the notch on first launch until `setup_done`, and from the
+  tray ("Setup and guide") or Settings. It is one more view of the same
+  shape, like Settings.
+- Facts come from the CLIs (`setup.rs`), run hidden with a time limit only
+  while the screen is open. Claude has no model list command, so the list
+  is the names the CLI accepts (haiku, sonnet, opus) plus the full model
+  name the running CLI reported in its `init` line; Codex models come from
+  `codex debug models` (visibility "list").
+- "Account folder" pins one sign-in: `claude_config_dir` is passed as
+  `CLAUDE_CONFIG_DIR`, `codex_home` as `CODEX_HOME`, to every CLI process
+  (and is part of the Claude process key).
 
 ## Schedule rules
 
