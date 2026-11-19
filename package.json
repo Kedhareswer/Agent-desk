@@ -1,7 +1,7 @@
 {
   "name": "agent-desk",
   "private": true,
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "A lightweight background AI assistant for Windows that reuses your Claude or Codex subscription.",
   "license": "MIT",
   "repository": {

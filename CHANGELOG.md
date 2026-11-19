@@ -10,6 +10,8 @@ the release workflow uses that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-11-19
+
 ### Added
 
 - Earlier answers. The clock button in the notch (or Ctrl + H) lists the
@@ -187,7 +189,8 @@ the release workflow uses that section as the GitHub Release notes.
 - Weekly dependency security audit and Dependabot updates.
 
 
-[Unreleased]: https://github.com/Kedhareswer/Agent-desk/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/Kedhareswer/Agent-desk/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/Kedhareswer/Agent-desk/releases/tag/v0.1.5
 [0.1.4]: https://github.com/Kedhareswer/Agent-desk/releases/tag/v0.1.4
 [0.1.3]: https://github.com/Kedhareswer/Agent-desk/releases/tag/v0.1.3
 [0.1.2]: https://github.com/Kedhareswer/Agent-desk/releases/tag/v0.1.2
