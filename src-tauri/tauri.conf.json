@@ -40,6 +40,23 @@
         "contentProtected": true,
         "focus": false,
         "focusable": false
+      },
+      {
+        "label": "pointer",
+        "title": "Agent Desk pointer",
+        "url": "pointer.html",
+        "width": 120,
+        "height": 40,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "resizable": false,
+        "shadow": false,
+        "contentProtected": true,
+        "focus": false,
+        "focusable": false
       }
     ],
     "security": {

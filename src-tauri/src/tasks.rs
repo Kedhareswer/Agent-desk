@@ -184,6 +184,8 @@ fn handle_call(app: &AppHandle, name: &str, args: &Value) -> mcp::ToolResult {
         ev.status = "running";
         emit_action(app, &ev);
     }
+    // The screen edge glows while Agent Desk acts, until the answer ends.
+    crate::working(app, true);
     // The user pressed Stop while this waited.
     if state.engine.current_turn() != turn {
         ev.status = "denied";
@@ -331,11 +333,31 @@ fn after_step(app: &AppHandle, done: &str) -> String {
     }
 }
 
-/// Click a listed element: glide, click, short pause.
-fn click_element(e: &uia::Element) {
-    uia::glide_to(e.x, e.y);
+/// Click at a point the way Agent Desk does: its own pointer glides there,
+/// then the element is pressed through UI Automation, and only if that is
+/// not possible (or it is a right or double click) the real cursor clicks
+/// there and comes straight back to where the user left it.
+fn press(app: &AppHandle, x: i32, y: i32, right: bool, double: bool) {
+    crate::pointer::glide(app, x, y);
     std::thread::sleep(Duration::from_millis(60));
-    uia::click(false, false);
+    if right || double || !uia::press_at(x, y) {
+        uia::at_point(x, y, || uia::click(right, double));
+    }
+    crate::pointer::hide_soon(app);
+}
+
+/// Put the text cursor in a text box: by UI Automation, or a brief click.
+fn focus_field(app: &AppHandle, x: i32, y: i32) {
+    crate::pointer::glide(app, x, y);
+    if !uia::focus_at(x, y) {
+        uia::at_point(x, y, || uia::click(false, false));
+    }
+    crate::pointer::hide_soon(app);
+}
+
+/// Click a listed element, then give the app a moment.
+fn click_element(app: &AppHandle, e: &uia::Element) {
+    press(app, e.x, e.y, false, false);
     std::thread::sleep(Duration::from_millis(300));
 }
 
@@ -370,17 +392,16 @@ fn attach(app: &AppHandle, file: &Path) -> Result<(), String> {
         uia::is_attach_label(&e.name) && e.kind != "edit"
     })
     .ok_or("No attach button found in the app in front. Open the chat or email first.")?;
-    click_element(&button);
+    click_element(app, &button);
     // Some apps open the file dialog straight away; others show a menu.
     if wait_for(1200, "file name", is_name_box).is_none() {
         let upload = wait_for(1500, "", |e| uia::is_local_upload_label(&e.name))
             .ok_or("The attach menu has no \"upload from this device\" choice.")?;
-        click_element(&upload);
+        click_element(app, &upload);
     }
     let name_box =
         wait_for(6000, "file name", is_name_box).ok_or("The Open dialog did not appear.")?;
-    uia::glide_to(name_box.x, name_box.y);
-    uia::click(false, false);
+    focus_field(app, name_box.x, name_box.y);
     std::thread::sleep(Duration::from_millis(150));
     if let Ok(all) = actions::parse_keys("Ctrl+A") {
         platform::press_keys(&all);
@@ -394,7 +415,7 @@ fn attach(app: &AppHandle, file: &Path) -> Result<(), String> {
         e.name.trim().eq_ignore_ascii_case("open") || e.name.trim().eq_ignore_ascii_case("&open")
     })
     .ok_or("The Open dialog has no Open button.")?;
-    click_element(&open);
+    click_element(app, &open);
     // Let the app take the file before describing the screen.
     std::thread::sleep(Duration::from_millis(1200));
     Ok(())
@@ -651,9 +672,7 @@ fn execute(
         }
         Action::Click { right, double, .. } => {
             let (x, y) = point.ok_or("Nowhere to click.")?;
-            uia::glide_to(x, y);
-            std::thread::sleep(Duration::from_millis(60));
-            uia::click(*right, *double);
+            press(app, x, y, *right, *double);
             // Hand back what the screen shows now, so the AI does not need
             // a separate look before its next step.
             Ok((
@@ -663,8 +682,7 @@ fn execute(
         }
         Action::Fill { text, .. } => {
             let (x, y) = point.ok_or("Nowhere to type.")?;
-            uia::glide_to(x, y);
-            uia::click(false, false);
+            focus_field(app, x, y);
             std::thread::sleep(Duration::from_millis(150));
             // Replace what is there: select all, then type.
             if let Ok(all) = actions::parse_keys("Ctrl+A") {
@@ -677,7 +695,12 @@ fn execute(
             ))
         }
         Action::Scroll { lines, horizontal } => {
-            uia::scroll(*lines, *horizontal);
+            // Scroll where Agent Desk last pointed; without that, where the
+            // user's cursor is (the wheel goes to whatever is under it).
+            match crate::pointer::last() {
+                Some((x, y)) => uia::at_point(x, y, || uia::scroll(*lines, *horizontal)),
+                None => uia::scroll(*lines, *horizontal),
+            }
             done("Scrolled.")
         }
         Action::OpenPath { path } => {

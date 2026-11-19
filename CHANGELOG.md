@@ -10,6 +10,31 @@ the release workflow uses that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+### Added
+
+- Crash recovery. If Agent Desk closes unexpectedly, Windows starts it again,
+  and the notch offers to continue the request it was working on
+  ("Continue" or "Not now"). It asks instead of redoing it by itself, and the
+  AI is told to check the screen first so nothing is done twice. If only the
+  AI process stops part-way, the request is sent again once, automatically.
+- Agent Desk no longer moves your mouse around. When it acts, its own
+  pointer, labelled "Agent Desk", glides to the spot, and buttons, links,
+  check boxes and text boxes are used directly through Windows'
+  accessibility interface. Where a real click is unavoidable, your cursor
+  is borrowed for a split second and put back where you left it.
+- The screen edge glows in Agent Desk's working colour while it acts on
+  your computer, so you can tell it is busy even when the notch is small.
+- `crash.log` in the settings folder records what failed and where (never
+  what you said), so crashes can be diagnosed.
+
+### Fixed
+
+- Agent Desk closed itself right after "Transcribing" on many computers,
+  including Intel 12th to 14th generation laptops. The speech engine had been
+  built for processors with AVX-512; it is now built for AVX2, which all
+  processors from about 2013 on have. On older processors talking shows a
+  message instead of crashing, and typing still works.
+
 ## [0.1.3] - 2026-11-19
 
 ### Security

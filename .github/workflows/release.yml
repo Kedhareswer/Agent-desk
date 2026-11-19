@@ -30,6 +30,17 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Build whisper.cpp for a fixed CPU level, not for whatever the build
+  # machine has. "Native" picked up AVX-512 on GitHub's runners and the app
+  # crashed (illegal instruction) on CPUs without it, such as Intel 12th-14th
+  # gen laptops. AVX2/FMA/F16C is every x86-64 CPU from about 2013-2015 on;
+  # stt.rs refuses to load the model (with a message) on anything older.
+  GGML_NATIVE: "OFF"
+  GGML_AVX: "ON"
+  GGML_AVX2: "ON"
+  GGML_FMA: "ON"
+  GGML_F16C: "ON"
+  GGML_AVX512: "OFF"
   TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
@@ -55,7 +66,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-          key: ${{ env.IMAGE_VERSION }}
+          # "-avx2": the CPU level above is not part of rust-cache's own key.
+          key: ${{ env.IMAGE_VERSION }}-avx2
       - run: npm ci
 
       - name: Check the tag matches the version files

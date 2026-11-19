@@ -65,7 +65,9 @@ src-tauri/                  Rust (Tauri 2) – all system work
                             due/next-run logic, schedules.json storage
   src/uia.rs                Windows UI Automation (elements by name, also
                             inside browser pages), element under a point,
-                            cursor glide/click/scroll, Start-menu apps incl.
+                            press without the mouse (Invoke/Toggle/Select,
+                            SetFocus), brief real click that puts the
+                            user's cursor back, Start-menu apps incl.
                             Store apps (shell:AppsFolder), PDF pages via
                             Windows.Data.Pdf
   src/files.rs              Folders and documents: list, read text/.docx,
@@ -88,7 +90,8 @@ src-tauri/                  Rust (Tauri 2) – all system work
   src/update.rs             In-app updater (installer copies only), channel
                             detection (installer / Scoop / manual)
   cross/                    Linux → Windows cross-build script and MinGW shim
-  tauri.conf.json           Two windows: "main" (notch) and "glow"
+  src/pointer.rs            Agent Desk's own labelled pointer window
+  tauri.conf.json           Windows: "main" (notch), "glow", "pointer"
 ui/                         Plain HTML/CSS/JS – no framework, no build step
   index.html                The notch: #notch > #clip > #content > #head + #panel
   main.js                   All interface behaviour
@@ -179,7 +182,7 @@ bucket/agent-desk.json      Scoop manifest, written by the release workflow
   `list_browser_profiles`, `open_app` (Start menu incl. Store apps; names
   only, never paths), `focus_window`, `find_on_screen` (UI Automation
   elements, numbered), `click` (element number or x/y in the last
-  screenshot; the cursor glides there visibly), `fill` (click a box,
+  screenshot; Agent Desk's own pointer glides there), `fill` (click a box,
   replace its text; new lines are Shift+Enter), `scroll`, `type_text`,
   `press_keys` (one chord), `open_path`, `list_folder`, `read_file`
   (text, .docx, PDF as page images), `attach_file` (attach button → upload
@@ -303,6 +306,27 @@ bucket/agent-desk.json      Scoop manifest, written by the release workflow
 - Recording starts on key **down** so the first word is not lost; the UI
   only shows "Listening" once the hold passes the tap threshold.
 
+## Crash recovery
+
+`recovery.rs`. Keep all three parts:
+
+- `RegisterApplicationRestart` makes Windows restart the app after a crash
+  or hang (only once it has run for a minute, so a start-up crash cannot
+  loop). A panic hook and an unhandled-exception filter write one line to
+  `<config>/crash.log`: what failed and where, never user text.
+- `send_question` goes through `send_tracked`, which keeps the request in
+  `<config>/pending-task.json` until its answer is done, errors or is
+  stopped (`task_finished`). On start a recent one (15 min) is offered once
+  in the notch (`take_recovery` / `resume_task` / `dismiss_recovery`). It is
+  never resent without the user saying Continue, because steps may already
+  have run; the resent prompt tells the AI to check the screen first.
+- When the Claude process dies mid-answer the backend emits `lost`, and
+  main.rs resends the request once to a fresh process (`answer_lost`); a
+  second loss becomes an ordinary error. The UI never sees `lost`.
+- whisper.cpp is built for AVX2/FMA/F16C (`GGML_*` in the workflows),
+  never `GGML_NATIVE`: GitHub's runners have AVX-512 and a native build
+  crashes on CPUs without it. `stt::cpu_supported` checks before loading.
+
 ## Keyboard rules
 
 - Windows cannot register a modifier-only hotkey, so Ctrl + Alt uses a
@@ -356,8 +380,17 @@ edge, a soft screen-edge glow while listening.
 - **Motion:** morph 0.42 s `cubic-bezier(0.22,1,0.36,1)`, entrance drop
   from the docked edge. Everything respects `prefers-reduced-motion`.
 - **Glow** is subtle and short (a thin inset band), never a full-screen
-  wash. It is a separate click-through window and is only on while
-  listening.
+  wash. It is a separate click-through window, on while listening and,
+  in the working colour, while Agent Desk acts on the computer
+  (`working()`; off when the answer ends or is stopped).
+- **Never take the user's mouse.** Agent Desk shows its own pointer (the
+  click-through "pointer" window, an arrow labelled "Agent Desk" whose
+  tip is the window's corner, placed 1 px past the target so it never
+  covers it). Clicks go through UI Automation (`uia::press_at`,
+  `uia::focus_at`); only right/double clicks, screenshot spots and
+  elements without those patterns use the real cursor, through
+  `uia::at_point`, which puts it back within ~50 ms. Never glide the
+  real cursor.
 - **Docking:** top, bottom, left or right edge of any monitor. Shape and
   ears adapt per edge (`data-edge` on `#shell`). Dragging snaps to the
   nearest edge (`dock::snap`). The native window is sized by `main.js`

@@ -173,6 +173,10 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 .msg.ai.streaming > .code::after, .msg.ai.streaming > .table::after { display: none; }
 @keyframes blink { 50% { opacity: 0; } }
 
+/* After a crash: offer to continue the request that was interrupted. */
+#recover { display: grid; gap: 10px; padding: 12px 20px 16px; font-size: 13.5px; }
+#recover p { margin: 0; color: var(--soft); user-select: text; }
+
 /* One step the AI takes on the computer, inside the answer. */
 .msg.act { display: grid; gap: 7px; padding: 9px 12px; border-radius: 12px; background: var(--panel); font-size: 13.5px; }
 .act-line { display: flex; align-items: center; gap: 9px; min-width: 0; }
@@ -188,9 +192,9 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 .msg.act[data-status="failed"] .act-dot { background: var(--danger); }
 .msg.act[data-status="failed"] .act-status { color: var(--danger); white-space: normal; }
 .act-detail { margin: 0; padding: 7px 10px; max-height: 120px; overflow: auto; border-radius: 8px; background: rgba(0, 0, 0, 0.35); font: 12.5px/1.45 "Cascadia Code", Consolas, ui-monospace, monospace; white-space: pre-wrap; word-break: break-word; user-select: text; }
-.act-buttons { display: flex; gap: 6px; }
-.act-buttons button { font-size: 12.5px; padding: 4px 11px; }
-.act-buttons button.primary { background: #fff; color: #000; font-weight: 600; }
+.act-buttons, .recover-buttons { display: flex; gap: 6px; }
+.act-buttons button, .recover-buttons button { font-size: 12.5px; padding: 4px 11px; }
+.act-buttons button.primary, .recover-buttons button.primary { background: #fff; color: #000; font-weight: 600; }
 
 #actions { display: flex; align-items: center; gap: 6px; padding: 6px 14px 12px; font-size: 12.5px; }
 #actions button { display: inline-flex; align-items: center; gap: 6px; background: transparent; color: var(--soft); padding: 4px 9px; }

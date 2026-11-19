@@ -104,7 +104,9 @@ screen. Do not repeat help you already gave.
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct AiEvent {
     pub turn: u64,
-    /// "delta" | "done" | "error"
+    /// "delta" | "done" | "error", or "lost" when the AI process died in the
+    /// middle of an answer (main.rs resends the request once, otherwise
+    /// passes it on as "error"; the interface never sees "lost").
     pub kind: &'static str,
     pub text: String,
 }
@@ -558,7 +560,7 @@ impl Engine {
                 };
                 emit(AiEvent {
                     turn: turn.load(Ordering::SeqCst),
-                    kind: "error",
+                    kind: "lost",
                     text,
                 });
             }
