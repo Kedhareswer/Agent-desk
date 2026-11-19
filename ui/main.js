@@ -7,7 +7,8 @@ const { listen } = window.__TAURI__.event;
 const $ = (id) => document.getElementById(id);
 const el = {
   shell: $("shell"), notch: $("notch"), content: $("content"), topLine: $("top-line"), label: $("label"), prompt: $("prompt"),
-  stop: $("stop"), openSettings: $("open-settings"), close: $("close"),
+  stop: $("stop"), openSettings: $("open-settings"), openHistory: $("open-history"), close: $("close"),
+  history: $("history"), historyList: $("history-list"), historyEmpty: $("history-empty"), historyClear: $("history-clear"),
   panel: $("panel"), notice: $("notice"), thread: $("thread"), actions: $("actions"),
   insert: $("insert"), copy: $("copy"), newChat: $("new-chat"), stat: $("stat"),
   setup: $("setup"), recover: $("recover"),
@@ -33,7 +34,8 @@ const MODELS = { haiku: "Haiku", sonnet: "Sonnet", opus: "Opus" };
 const TEXT_FIELDS = ["wake_mode", "shortcut", "live_shortcut", "provider", "claude_model", "codex_model", "claude_path", "codex_path", "voice_model", "dock_edge"];
 const TOGGLES = ["include_screen", "hide_from_capture", "hide_on_blur", "autostart", "edge_glow", "live_system_audio", "auto_update", "actions_enabled"];
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-const ACTION_STATUS = { ask: "", running: "Working…", done: "Done", denied: "Not done", failed: "Failed" };
+const HISTORY_KEY = "agent-desk.history";
+const HISTORY_MAX = 40;
 
 const state = {
   settings: null,
@@ -45,13 +47,16 @@ const state = {
   answer: "",          // text of the answer being streamed or last finished
   segment: "",         // the part of it after the last action, shown in answerNode
   answerNode: null,
-  actionNodes: {},     // action id → its row in the thread
+  step: null,          // the one line that shows the step being done
+  steps: 0,            // steps taken for this answer
+  question: "",        // what was asked, for the history
   asking: 0,           // id of the action waiting for the user's OK
   draft: { allow: [], commands: [] }, // settings lists while editing
   schedules: [],
   editing: null,       // schedule being edited (id 0 = new)
   startFresh: false,   // the engine lost the conversation; clear before the next question
   lastActivity: Date.now(),
+  lastEvent: 0,         // when the answer in progress last showed a sign of life
   askedAt: 0,
   live: false,         // "work with me" mode is on
   quiet: null,         // a live check-in whose answer is not shown yet
@@ -115,7 +120,7 @@ function applyLook() {
 /* ---------- panel ---------- */
 
 function refreshPanel() {
-  const settingsOpen = !el.settings.hidden || !el.setup.hidden;
+  const settingsOpen = !el.settings.hidden || !el.setup.hidden || !el.history.hidden;
   const hasThread = !state.tucked && [...el.thread.children].some((n) => !n.hidden && !n.classList.contains("current"));
   const hasAnswer = !state.tucked && !state.busy && state.answer.trim().length > 0;
   el.thread.hidden = !hasThread || settingsOpen;
@@ -123,23 +128,30 @@ function refreshPanel() {
   el.recover.hidden ||= settingsOpen;
   el.panel.hidden = el.thread.hidden && el.actions.hidden && el.notice.hidden && el.recover.hidden && !settingsOpen;
   el.notch.classList.toggle("settings-open", settingsOpen);
-  el.openSettings.classList.toggle("active", settingsOpen);
+  el.openSettings.classList.toggle("active", !el.settings.hidden);
+  el.openHistory.classList.toggle("active", !el.history.hidden);
   el.stop.hidden = !state.busy;
 }
 
 /* ---------- putting a finished answer away ---------- */
 
-// A finished answer stays on screen for a few seconds, then the notch
-// shrinks back and tucks away. The mouse over it keeps it open; so do
-// typing, settings, a step waiting for an OK, errors, notices and live mode.
+// A finished answer stays on screen long enough to read it (at least 10 s,
+// longer for long answers), then the notch shrinks back and tucks away.
+// The mouse over it keeps it open; so do typing, settings, the history, a
+// step waiting for an OK, errors, notices and live mode.
 let tuckTimer = 0;
-const TUCK_MS = () => window.__tuckMs ?? 5000;
-const AFTER_HOVER_MS = () => window.__tuckAfterHoverMs ?? 2000;
+const TUCK_MS = () => window.__tuckMs ?? readingMs(state.answer);
+const AFTER_HOVER_MS = () => window.__tuckAfterHoverMs ?? 3000;
+// About 4 words a second, between 10 and 40 seconds.
+function readingMs(text) {
+  const words = (text.match(/\S+/g) || []).length;
+  return Math.min(40000, Math.max(10000, words * 250));
+}
 
 function canTuck() {
   const typing = document.activeElement === el.prompt && el.notch.dataset.view === "input";
   return state.phase === "done" && !state.busy && !state.live && !state.asking && !typing &&
-    el.settings.hidden && el.setup.hidden && el.notice.hidden;
+    el.settings.hidden && el.setup.hidden && el.history.hidden && el.notice.hidden;
 }
 
 function scheduleTuck(ms = TUCK_MS()) {
@@ -214,7 +226,8 @@ function clearThread() {
   state.answer = "";
   state.segment = "";
   state.answerNode = null;
-  state.actionNodes = {};
+  state.step = null;
+  state.steps = 0;
   state.asking = 0;
   state.startFresh = false;
   state.tucked = false;
@@ -261,9 +274,13 @@ function beginTurn(shown, quiet = false) {
   state.answer = "";
   state.segment = "";
   state.asking = 0;
+  state.step = null;
+  state.steps = 0;
+  state.question = shown;
   state.answerNode = addMessage("ai", "");
   state.answerNode.hidden = true;
   state.askedAt = performance.now();
+  state.lastEvent = state.askedAt;
   state.lastActivity = Date.now();
   state.busy = true;
   if (quiet) {
@@ -291,40 +308,47 @@ function adoptTurn(turn) {
 
 /* ---------- actions on the computer ---------- */
 
-// One step the AI takes. It appears in the answer, in order, before it
-// runs; a risky one waits here for Allow.
+// The steps the AI takes share one line under the answer. It shows the
+// step being done and changes in place when the next one starts, so the
+// answer is not pushed down by a list of finished steps. A risky step
+// waits on that line for Allow. When the answer is done the line goes,
+// unless the last step failed or was refused.
 function onAction(p) {
   if (p.turn > state.turn || state.turn === Infinity) return void state.early.push(p);
   if (p.turn !== state.turn) return;
-  let node = state.actionNodes[p.id];
+  let node = state.step;
+  const fresh = !node || node.dataset.id !== String(p.id);
   if (!node) {
     node = document.createElement("div");
     node.className = "msg act";
-    node.dataset.id = p.id;
     node.innerHTML = '<div class="act-line"><span class="act-dot"></span><span class="act-text"></span><span class="act-status"></span></div>';
     node.querySelector(".act-text").textContent = p.summary;
-    node.querySelector(".act-text").title = p.summary;
-    // Text written so far stays above the step; what comes next goes below.
-    if (state.answerNode && state.segment.trim()) {
-      state.answerNode.classList.remove("streaming");
-      // Show it now: the queued render would draw into the next node.
-      state.answerNode.innerHTML = window.renderMarkdown(state.segment.trimStart());
-      state.answerNode.hidden = false;
-      el.thread.appendChild(node);
-      state.answerNode = addMessage("ai", "");
-      state.answerNode.hidden = true;
-      state.segment = "";
-    } else if (state.answerNode) {
-      el.thread.insertBefore(node, state.answerNode);
-    } else {
-      el.thread.appendChild(node);
-    }
-    state.actionNodes[p.id] = node;
+    el.thread.appendChild(node); // below the answer so far
+    state.step = node;
+  } else if (fresh) {
+    swapStepText(node, p.summary);
   }
+  if (fresh) {
+    state.steps += 1;
+    state.answerNode?.classList.remove("streaming"); // no typing cursor while a step runs
+    // Text after a step starts a new paragraph of the same answer.
+    if (state.segment.trim() && !/\n\n$/.test(state.segment)) state.segment += "\n\n";
+  }
+  node.classList.remove("leaving");
+  node.dataset.id = p.id;
   node.dataset.status = p.status;
-  node.querySelector(".act-status").textContent = p.status === "failed" ? p.result || "Failed" : ACTION_STATUS[p.status] ?? "";
+  node.dataset.summary = p.summary;
+  node.querySelector(".act-text").title = p.summary;
+  node.querySelector(".act-status").textContent = state.steps > 1 ? `Step ${state.steps}` : "";
   node.querySelector(".act-detail")?.remove();
   node.querySelector(".act-buttons")?.remove();
+  node.querySelector(".act-error")?.remove();
+  if (p.status === "failed" && p.result) {
+    const why = document.createElement("div");
+    why.className = "act-error";
+    why.textContent = p.result;
+    node.appendChild(why);
+  }
   if (p.status === "ask") {
     if (p.detail && p.detail !== p.summary) {
       const pre = document.createElement("pre");
@@ -342,14 +366,126 @@ function onAction(p) {
     if (state.asking === p.id) state.asking = 0;
     if (p.status === "running") setPhase("acting");
     else if (state.busy) setPhase("thinking");
+    else {
+      // A step with no answer in progress: nothing else will end it, so
+      // go back to rest now instead of showing "Working on it" forever.
+      settleSteps();
+      rest();
+      if (state.phase === "done") scheduleTuck();
+    }
   }
+  state.lastEvent = performance.now();
   refreshPanel();
   el.thread.scrollTop = el.thread.scrollHeight;
 }
 
+// The old step slides up and out, then the new one comes in from below.
+// Timers, not animation events: those never fire with reduced motion.
+function swapStepText(node, text) {
+  const span = node.querySelector(".act-text");
+  clearTimeout(node.swapTimer);
+  span.classList.remove("in");
+  span.classList.add("out");
+  node.swapTimer = setTimeout(() => {
+    span.textContent = text;
+    span.classList.remove("out");
+    void span.offsetWidth; // restart the animation
+    span.classList.add("in");
+  }, 140);
+}
+
+// The answer is finished: the step line goes, unless it shows a problem.
+function settleSteps() {
+  const node = state.step;
+  if (!node) return;
+  state.step = null;
+  if (node.dataset.status === "failed" || node.dataset.status === "denied") return;
+  node.classList.add("leaving");
+  setTimeout(() => {
+    node.remove();
+    refreshPanel();
+    morph();
+  }, 260);
+}
+
+/* ---------- earlier answers ---------- */
+
+// Finished answers are kept on this computer (the window's own storage) so
+// they can be read again after the notch has tucked away or a new question
+// replaced them. Storage can be unavailable; then there is just no history.
+function loadHistory() {
+  try {
+    const list = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+
+function remember(question, answer, steps) {
+  if (!answer.trim()) return;
+  const list = loadHistory();
+  list.unshift({ q: question, a: answer.trim(), at: Date.now(), steps });
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(list.slice(0, HISTORY_MAX)));
+  } catch {}
+}
+
+function when(at) {
+  const d = new Date(at);
+  const today = new Date().toDateString() === d.toDateString();
+  const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return today ? time : `${d.toLocaleDateString([], { day: "numeric", month: "short" })}, ${time}`;
+}
+
+function renderHistory() {
+  const list = loadHistory();
+  el.historyList.textContent = "";
+  for (const item of list) {
+    const row = document.createElement("div");
+    row.className = "hist";
+    const q = document.createElement("div");
+    q.className = "hist-q";
+    const text = document.createElement("span");
+    text.textContent = item.q || "";
+    const time = document.createElement("time");
+    time.textContent = when(item.at);
+    q.append(text, time);
+    const a = document.createElement("div");
+    a.className = "msg ai";
+    a.innerHTML = window.renderMarkdown(String(item.a || "")); // escapes first
+    row.append(q, a);
+    if (item.steps) {
+      const steps = document.createElement("div");
+      steps.className = "hist-steps";
+      steps.textContent = item.steps === 1 ? "1 step on your computer" : `${item.steps} steps on your computer`;
+      row.append(steps);
+    }
+    el.historyList.append(row);
+  }
+  el.historyEmpty.hidden = list.length > 0;
+  el.historyClear.hidden = list.length === 0;
+}
+
+async function openHistory() {
+  closeOverlays();
+  untuck();
+  clearTimeout(tuckTimer);
+  renderHistory();
+  el.history.hidden = false;
+  el.historyList.scrollTop = 0;
+  refreshPanel();
+  await invoke("focus");
+}
+
+function closeHistory() {
+  el.history.hidden = true;
+  refreshPanel();
+  if (state.phase === "done") scheduleTuck();
+}
+
 async function answerAction(id, decision) {
-  const node = state.actionNodes[id];
-  node?.querySelector(".act-buttons")?.remove();
+  if (state.step?.dataset.id === String(id)) state.step.querySelector(".act-buttons")?.remove();
   if (state.asking === id) state.asking = 0;
   await invoke("answer_action", { id, decision });
 }
@@ -373,6 +509,7 @@ async function send() {
 function onAiEvent(payload) {
   if (payload.turn > state.turn || state.turn === Infinity) return void state.early.push(payload);
   if (payload.turn !== state.turn) return;
+  state.lastEvent = performance.now();
   if (payload.kind === "delta") {
     state.answer += payload.text;
     state.segment += payload.text;
@@ -404,7 +541,9 @@ function onAiEvent(payload) {
       state.answerNode?.classList.remove("streaming");
       if (state.answerNode && !state.segment.trim()) state.answerNode.remove(); // ended on an action
       el.stat.textContent = `${modelName()} · ${((performance.now() - state.askedAt) / 1000).toFixed(1)}s`;
+      remember(state.question, state.segment || state.answer, state.steps);
     }
+    settleSteps();
     rest();
     refreshPanel();
     morph(); // fit the window exactly now that it has stopped growing
@@ -423,17 +562,33 @@ function fail(message) {
   state.answer = ""; // a cut-off answer is not offered for Insert
   state.busy = false;
   state.startFresh = true;
+  settleSteps();
   addMessage("error", message);
   setPhase("error");
   refreshPanel();
   morph();
 }
 
+/* ---------- never stuck ---------- */
+
+// An answer that shows no sign of life for this long (no text, no step) is
+// stopped and said so, instead of the notch working forever. A step that
+// waits for the user's OK has its own two-minute limit and is not counted.
+const STALL_MS = () => window.__stallMs ?? 180000;
+setInterval(() => {
+  if (!state.busy || state.quiet || state.asking || state.turn === Infinity) return;
+  if (performance.now() - (state.lastEvent || state.askedAt) < STALL_MS()) return;
+  invoke("stop").catch(() => {});
+  state.turn = -1; // late events from the stopped answer are ignored
+  fail("No reply for a while, so Agent Desk stopped waiting. Ask again to try once more.");
+}, 1000);
+
 async function stop() {
   if (!state.busy) return;
   await invoke("stop");
   state.asking = 0;
   el.thread.querySelectorAll(".act-buttons").forEach((n) => n.remove());
+  settleSteps();
   state.turn = -1;
   if (state.answerNode && !state.answer) state.answerNode.remove();
   state.answerNode?.classList.remove("streaming");
@@ -508,6 +663,7 @@ async function checkStatus() {
 }
 
 async function openSettings() {
+  el.history.hidden = true;
   const f = el.settings.elements;
   const s = state.settings;
   for (const name of TEXT_FIELDS) f[name].value = s[name];
@@ -622,11 +778,13 @@ $("recover-no").addEventListener("click", () => {
 });
 
 function closeOverlays() {
+  if (!el.history.hidden) closeHistory();
   if (!el.settings.hidden) closeSettings();
   if (!el.setup.hidden) closeSetup();
 }
 
 async function openSetup() {
+  el.history.hidden = true;
   if (!el.settings.hidden) closeSettings();
   const s = state.settings;
   setup.provider = s.provider;
@@ -971,6 +1129,14 @@ el.newChat.addEventListener("click", newChat);
 el.insert.addEventListener("click", insertAnswer);
 el.copy.addEventListener("click", copyAnswer);
 el.openSettings.addEventListener("click", () => (el.settings.hidden ? openSettings() : closeSettings()));
+el.openHistory.addEventListener("click", () => (el.history.hidden ? openHistory() : closeHistory()));
+el.historyClear.addEventListener("click", () => {
+  try {
+    localStorage.removeItem(HISTORY_KEY);
+  } catch {}
+  renderHistory();
+  morph();
+});
 el.settingsCancel.addEventListener("click", closeSettings);
 $("open-setup").addEventListener("click", openSetup);
 $("setup-provider").addEventListener("change", (e) => {
@@ -1085,6 +1251,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     e.preventDefault();
     if (!el.setup.hidden) closeSetup();
+    else if (!el.history.hidden) closeHistory();
     else if (!el.settings.hidden) closeSettings();
     else if (state.busy && !state.quiet) stop();
     else invoke("hide");
@@ -1097,6 +1264,9 @@ document.addEventListener("keydown", (e) => {
   } else if (ctrl && e.shiftKey && e.key.toLowerCase() === "c") {
     e.preventDefault();
     copyAnswer();
+  } else if (ctrl && !e.shiftKey && e.key.toLowerCase() === "h") {
+    e.preventDefault();
+    el.history.hidden ? openHistory() : closeHistory();
   } else if (ctrl && e.key.toLowerCase() === "n") {
     e.preventDefault();
     newChat();

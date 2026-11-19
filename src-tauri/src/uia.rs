@@ -201,7 +201,7 @@ mod imp {
     use super::{shape, Element};
     use std::{mem::size_of, thread::sleep, time::Duration};
     use windows::core::{Interface, HSTRING};
-    use windows::Win32::Foundation::{HWND, POINT};
+    use windows::Win32::Foundation::{HWND, POINT, RECT};
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
     };
@@ -220,7 +220,7 @@ mod imp {
         MOUSEINPUT, MOUSE_EVENT_FLAGS,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetCursorPos, GetForegroundWindow, SetCursorPos,
+        GetCursorPos, GetForegroundWindow, GetWindowRect, SetCursorPos,
     };
 
     /// UI Automation, cursor positions and screenshots all in physical
@@ -309,6 +309,14 @@ mod imp {
                 },
             },
         }
+    }
+
+    /// A window's rectangle (left, top, right, bottom) in physical pixels.
+    pub fn window_rect(hwnd: isize) -> Option<(i32, i32, i32, i32)> {
+        physical_pixels();
+        let mut r = RECT::default();
+        unsafe { GetWindowRect(HWND(hwnd as *mut _), &mut r).ok()? };
+        (r.right > r.left && r.bottom > r.top).then_some((r.left, r.top, r.right, r.bottom))
     }
 
     /// Where the user's cursor is (physical pixels).
@@ -532,6 +540,9 @@ mod imp {
     }
     pub fn cursor_pos() -> (i32, i32) {
         (0, 0)
+    }
+    pub fn window_rect(_hwnd: isize) -> Option<(i32, i32, i32, i32)> {
+        None
     }
     pub fn press_at(_x: i32, _y: i32) -> bool {
         false

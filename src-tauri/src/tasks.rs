@@ -196,7 +196,14 @@ fn handle_call(app: &AppHandle, name: &str, args: &Value) -> mcp::ToolResult {
     if action.takes_in_private_data() {
         state.private_data.store(true, Ordering::SeqCst);
     }
-    match execute(app, &action, point) {
+    let outcome = execute(app, &action, point);
+    // Normally the working state ends with the answer. A step that came in
+    // with no answer streaming (nothing will end it) ends it itself, so the
+    // glow, pointer and "Working on it" can never be left on.
+    if !state.engine.is_busy() {
+        crate::working(app, false);
+    }
+    match outcome {
         Ok((result, note)) => {
             ev.status = "done";
             ev.result = note;
@@ -344,6 +351,38 @@ fn press(app: &AppHandle, x: i32, y: i32, right: bool, double: bool) {
         uia::at_point(x, y, || uia::click(right, double));
     }
     crate::pointer::hide_soon(app);
+}
+
+/// The window a scroll is meant for: the one in front, or the last one
+/// Agent Desk switched to when the notch itself is in front.
+fn scroll_window(app: &AppHandle) -> Option<isize> {
+    let state = app.state::<App>();
+    let ours = overlay(app).map(|w| own_hwnd(&w)).unwrap_or(0);
+    let front = platform::foreground().hwnd;
+    let hwnd = if front == ours || front == 0 {
+        match *state.target.lock().unwrap() {
+            0 => state.snapshot.lock().unwrap().foreground.hwnd,
+            t => t,
+        }
+    } else {
+        front
+    };
+    (hwnd != 0).then_some(hwnd)
+}
+
+/// Where to scroll: the last spot pointed at if it lies inside the window,
+/// otherwise a little below the middle of it (past toolbars and tabs).
+fn scroll_point(
+    last: Option<(i32, i32)>,
+    rect: Option<(i32, i32, i32, i32)>,
+) -> Option<(i32, i32)> {
+    let (l, t, r, b) = rect?;
+    if let Some((x, y)) = last {
+        if x > l && x < r && y > t && y < b {
+            return Some((x, y));
+        }
+    }
+    Some(((l + r) / 2, t + (b - t) * 3 / 5))
 }
 
 /// Put the text cursor in a text box: by UI Automation, or a brief click.
@@ -695,13 +734,21 @@ fn execute(
             ))
         }
         Action::Scroll { lines, horizontal } => {
-            // Scroll where Agent Desk last pointed; without that, where the
-            // user's cursor is (the wheel goes to whatever is under it).
-            match crate::pointer::last() {
-                Some((x, y)) => uia::at_point(x, y, || uia::scroll(*lines, *horizontal)),
-                None => uia::scroll(*lines, *horizontal),
-            }
-            done("Scrolled.")
+            // The wheel goes to whatever is under the cursor, so aim it:
+            // where Agent Desk last pointed if that is still in the window
+            // in front, otherwise the middle of that window. Never wherever
+            // the user's own mouse happens to be.
+            let window = scroll_window(app);
+            let rect = window.and_then(uia::window_rect);
+            let (x, y) = scroll_point(crate::pointer::last(), rect)
+                .ok_or("There is no window to scroll. Open or switch to it first.")?;
+            crate::pointer::glide(app, x, y);
+            uia::at_point(x, y, || uia::scroll(*lines, *horizontal));
+            crate::pointer::hide_soon(app);
+            Ok((
+                mcp::ToolResult::text(after_step(app, "Scrolled.")),
+                String::new(),
+            ))
         }
         Action::OpenPath { path } => {
             let full = checked_path(path)?;
@@ -971,4 +1018,20 @@ pub fn run_schedule_now(app: AppHandle, id: u64) -> Result<(), String> {
         .cloned()
         .ok_or("That schedule no longer exists.")?;
     run_schedule(&app, &item, 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scroll_point;
+
+    #[test]
+    fn scrolling_is_aimed_inside_the_window() {
+        let window = Some((100, 50, 1100, 850));
+        // The last spot pointed at, when it is in the window.
+        assert_eq!(scroll_point(Some((400, 300)), window), Some((400, 300)));
+        // Otherwise the middle, a little low (past tabs and toolbars).
+        assert_eq!(scroll_point(Some((5, 5)), window), Some((600, 530)));
+        assert_eq!(scroll_point(None, window), Some((600, 530)));
+        assert_eq!(scroll_point(Some((400, 300)), None), None);
+    }
 }

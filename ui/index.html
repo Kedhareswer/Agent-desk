@@ -14,6 +14,7 @@
     <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></symbol>
     <symbol id="i-insert" viewBox="0 0 24 24"><path d="M9 10 4 15l5 5"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/></symbol>
     <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2.5"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
     <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
   </defs>
 </svg>
@@ -34,6 +35,7 @@
           <svg id="mic" class="icon" aria-hidden="true"><use href="#i-mic"/></svg>
           <button id="stop" title="Stop (Esc)" aria-label="Stop" hidden><span></span></button>
           <div id="tools">
+            <button id="open-history" title="Earlier answers (Ctrl+H)" aria-label="Earlier answers"><svg class="icon"><use href="#i-clock"/></svg></button>
             <button id="open-settings" title="Settings (Ctrl+,)" aria-label="Settings"><svg class="icon"><use href="#i-gear"/></svg></button>
             <button id="close" title="Hide (Esc)" aria-label="Hide"><svg class="icon"><use href="#i-x"/></svg></button>
           </div>
@@ -54,6 +56,12 @@
             <span id="stat"></span>
           </div>
 
+
+          <div id="history" hidden>
+            <div class="history-head"><h3>Earlier</h3><span class="spacer"></span><button id="history-clear" type="button">Clear</button></div>
+            <div id="history-list"></div>
+            <p id="history-empty" hidden>Nothing yet. Answers you get are kept here, on this computer, so you can read them again.</p>
+          </div>
 
           <div id="setup" hidden>
             <div class="setup-head wide">
