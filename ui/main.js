@@ -6,7 +6,7 @@ const { listen } = window.__TAURI__.event;
 
 const $ = (id) => document.getElementById(id);
 const el = {
-  shell: $("shell"), notch: $("notch"), content: $("content"), topLine: $("top-line"), label: $("label"), prompt: $("prompt"), meter: $("meter"),
+  shell: $("shell"), notch: $("notch"), content: $("content"), topLine: $("top-line"), label: $("label"), prompt: $("prompt"),
   stop: $("stop"), openSettings: $("open-settings"), close: $("close"),
   panel: $("panel"), notice: $("notice"), thread: $("thread"), actions: $("actions"),
   insert: $("insert"), copy: $("copy"), newChat: $("new-chat"), stat: $("stat"),
@@ -33,7 +33,6 @@ const TEXT_FIELDS = ["wake_mode", "shortcut", "live_shortcut", "provider", "clau
 const TOGGLES = ["include_screen", "hide_from_capture", "hide_on_blur", "autostart", "edge_glow", "live_system_audio", "auto_update", "actions_enabled"];
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const ACTION_STATUS = { ask: "", running: "Working…", done: "Done", denied: "Not done", failed: "Failed" };
-const METER_COLUMNS = 10;
 
 const state = {
   settings: null,
@@ -55,7 +54,7 @@ const state = {
   askedAt: 0,
   live: false,         // "work with me" mode is on
   quiet: null,         // a live check-in whose answer is not shown yet
-  levels: new Array(METER_COLUMNS).fill(0),
+  tucked: false,       // the finished answer was put away; only the notch remains
 };
 
 /* ---------- notch ---------- */
@@ -102,21 +101,6 @@ function modelName() {
   return s.provider === "codex" ? `Codex${s.codex_model ? " " + s.codex_model : ""}` : `Claude ${MODELS[s.claude_model] || s.claude_model}`;
 }
 
-function buildMeter() {
-  el.meter.innerHTML = "<i></i>".repeat(METER_COLUMNS * 3);
-}
-
-// Columns scroll left; each lights 0 to 3 dots from the bottom up.
-function pushLevel(level) {
-  state.levels.push(level);
-  state.levels.shift();
-  const dots = el.meter.children;
-  state.levels.forEach((v, col) => {
-    const lit = Math.min(3, Math.round(v * 3.4));
-    for (let row = 0; row < 3; row++) dots[col * 3 + row].classList.toggle("lit", 2 - row < lit);
-  });
-}
-
 function applyLook() {
   const s = state.settings;
   if (el.shell.dataset.edge !== s.dock_edge) {
@@ -131,8 +115,8 @@ function applyLook() {
 
 function refreshPanel() {
   const settingsOpen = !el.settings.hidden || !el.setup.hidden;
-  const hasThread = [...el.thread.children].some((n) => !n.hidden && !n.classList.contains("current"));
-  const hasAnswer = !state.busy && state.answer.trim().length > 0;
+  const hasThread = !state.tucked && [...el.thread.children].some((n) => !n.hidden && !n.classList.contains("current"));
+  const hasAnswer = !state.tucked && !state.busy && state.answer.trim().length > 0;
   el.thread.hidden = !hasThread || settingsOpen;
   el.actions.hidden = !hasAnswer || settingsOpen;
   el.panel.hidden = el.thread.hidden && el.actions.hidden && el.notice.hidden && !settingsOpen;
@@ -140,6 +124,55 @@ function refreshPanel() {
   el.openSettings.classList.toggle("active", settingsOpen);
   el.stop.hidden = !state.busy;
 }
+
+/* ---------- putting a finished answer away ---------- */
+
+// A finished answer stays on screen for a few seconds, then the notch
+// shrinks back and tucks away. The mouse over it keeps it open; so do
+// typing, settings, a step waiting for an OK, errors, notices and live mode.
+let tuckTimer = 0;
+const TUCK_MS = () => window.__tuckMs ?? 5000;
+const AFTER_HOVER_MS = () => window.__tuckAfterHoverMs ?? 2000;
+
+function canTuck() {
+  const typing = document.activeElement === el.prompt && el.notch.dataset.view === "input";
+  return state.phase === "done" && !state.busy && !state.live && !state.asking && !typing &&
+    el.settings.hidden && el.setup.hidden && el.notice.hidden;
+}
+
+function scheduleTuck(ms = TUCK_MS()) {
+  clearTimeout(tuckTimer);
+  tuckTimer = setTimeout(tuck, ms);
+}
+
+function tuck() {
+  tuckTimer = 0;
+  if (!canTuck()) return;
+  if (el.notch.matches(":hover")) return void (tuckTimer = -1); // leaving it starts the clock again
+  state.tucked = true;
+  refreshPanel(); // the shape shrinks back to the notch...
+  setTimeout(() => {
+    if (!state.tucked || !canTuck()) return;
+    if (el.notch.matches(":hover")) tuckTimer = -1; // the mouse came back: go once it leaves
+    else invoke("hide"); // ...then goes
+  }, 480);
+}
+
+function untuck() {
+  clearTimeout(tuckTimer);
+  tuckTimer = 0;
+  if (!state.tucked) return;
+  state.tucked = false;
+  refreshPanel();
+}
+
+el.notch.addEventListener("mouseenter", () => {
+  if (tuckTimer > 0) {
+    clearTimeout(tuckTimer);
+    tuckTimer = -1;
+  }
+});
+el.notch.addEventListener("mouseleave", () => tuckTimer === -1 && scheduleTuck(AFTER_HOVER_MS()));
 
 function showNotice(text) {
   el.notice.textContent = text || "";
@@ -182,6 +215,8 @@ function clearThread() {
   state.actionNodes = {};
   state.asking = 0;
   state.startFresh = false;
+  state.tucked = false;
+  clearTimeout(tuckTimer);
   refreshPanel();
 }
 
@@ -211,10 +246,13 @@ function beginTurn(shown, quiet = false) {
   if (state.startFresh) clearThread();
   if (!quiet) showNotice("");
   if (!quiet) closeOverlays();
-  // The notch's top line already shows the current question, so only
-  // earlier questions are listed in the conversation.
-  el.thread.querySelector(".msg.user.current")?.classList.remove("current");
-  const before = { answer: state.answer, node: state.answerNode };
+  untuck();
+  // Only the latest question and answer are shown; the AI still remembers
+  // the earlier ones. The question itself is in the notch's top line.
+  // A live check-in keeps the last answer until it has something to say.
+  const old = [...el.thread.children];
+  if (!quiet) old.forEach((n) => n.remove());
+  const before = { answer: state.answer, node: state.answerNode, old };
   const userNode = addMessage("user", shown);
   userNode.classList.add("current");
   state.answer = "";
@@ -338,6 +376,7 @@ function onAiEvent(payload) {
     if (state.quiet) {
       if (nothingToSay(state.answer)) return; // still nothing worth showing
       state.quiet.userNode.hidden = false;
+      state.quiet.before.old.forEach((n) => n.remove());
       el.topLine.textContent = state.quiet.userNode.textContent;
       state.quiet = null;
       el.stat.textContent = "";
@@ -365,6 +404,8 @@ function onAiEvent(payload) {
     }
     rest();
     refreshPanel();
+    morph(); // fit the window exactly now that it has stopped growing
+    if (state.phase === "done") scheduleTuck();
   } else if (payload.kind === "error") {
     fail(payload.text);
   }
@@ -382,6 +423,7 @@ function fail(message) {
   addMessage("error", message);
   setPhase("error");
   refreshPanel();
+  morph();
 }
 
 async function stop() {
@@ -395,6 +437,7 @@ async function stop() {
   state.busy = false;
   state.startFresh = true; // stopping ends the AI session
   state.quiet = null;
+  morph();
   if (state.live) return void rest();
   setPhase("idle", contextLine());
   refreshPanel();
@@ -1044,9 +1087,13 @@ function morph() {
   el.notch.style.height = h + "px";
   const m = margins();
   const need = { w: w + m.x, h: h + m.y };
+  // While an answer streams in, the shape grows line by line. Resizing the
+  // native window for every line is what made it stutter, so the window
+  // grows in steps ahead of the shape and fits exactly once it is done.
+  if (state.busy && need.h > windowSize.h) need.h = Math.ceil(need.h / 96) * 96;
   clearTimeout(shrinkTimer);
   setWindow(Math.max(windowSize.w, need.w), Math.max(windowSize.h, need.h));
-  if (need.w < windowSize.w || need.h < windowSize.h) shrinkTimer = setTimeout(() => setWindow(need.w, need.h), 460);
+  if (!state.busy && (need.w < windowSize.w || need.h < windowSize.h)) shrinkTimer = setTimeout(() => setWindow(need.w, need.h), 460);
 }
 new ResizeObserver(morph).observe(el.content);
 
@@ -1063,6 +1110,7 @@ listen("wake", ({ payload }) => {
   state.lastActivity = Date.now();
   state.context = payload;
   if (!el.settings.hidden) closeSettings();
+  if (payload.typing) untuck();
   if (payload.typing && (!state.busy || state.quiet)) {
     setPhase("idle", contextLine());
     el.prompt.focus();
@@ -1070,6 +1118,7 @@ listen("wake", ({ payload }) => {
   }
 });
 listen("refocus", ({ payload }) => {
+  if (payload) untuck();
   if (payload && (!state.busy || state.quiet)) {
     setPhase("idle", contextLine());
     el.prompt.focus();
@@ -1080,8 +1129,6 @@ listen("refocus", ({ payload }) => {
 listen("phase", ({ payload }) => {
   const { phase, text } = payload;
   if (phase === "listening") {
-    state.levels.fill(0);
-    pushLevel(0);
     showNotice("");
     closeOverlays();
     setPhase("listening", contextLine());
@@ -1100,7 +1147,6 @@ listen("phase", ({ payload }) => {
     showNotice(text);
   }
 });
-listen("level", ({ payload }) => (state.phase === "listening" || state.phase === "live") && pushLevel(payload));
 
 // Speech was understood and sent as a question.
 listen("asked", ({ payload }) => {
@@ -1118,8 +1164,6 @@ listen("asked", ({ payload }) => {
 listen("live", ({ payload }) => {
   if (payload === state.live) return void (payload && state.phase === "preparing" && rest("Listening to you and your screen"));
   state.live = payload;
-  state.levels.fill(0);
-  pushLevel(0);
   if (payload) {
     closeOverlays();
     clearThread();
@@ -1174,7 +1218,6 @@ listen("settings-changed", ({ payload }) => {
   // A window size sent during start-up may have been lost the same way.
   windowSize.w = windowSize.h = 0;
   morph();
-  buildMeter();
   applyLook();
   setPhase("idle", "");
   refreshPanel();

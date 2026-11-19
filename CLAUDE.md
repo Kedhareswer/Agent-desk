@@ -131,7 +131,7 @@ bucket/agent-desk.json      Scoop manifest, written by the release workflow
     tray "Setup and guide", Settings button).
   - `speech-progress` `{model, pct, done, error}` speech model download.
   - `wake` `{title, process, has_screen, typing}`, `refocus`, `level`
-    (0–1 loudness), `live` (bool), `live-heard` `{who, text}`, `live-note`,
+    (0–1 loudness; not drawn any more), `live` (bool), `live-heard` `{who, text}`, `live-note`,
     `insert-request`, `open-settings`, `settings-changed`.
 - **Turn ids:** every `ask` gets an increasing turn id. Events for other
   turns are ignored. Events can arrive **before** the UI knows its turn id
@@ -297,8 +297,19 @@ edge, a soft screen-edge glow while listening.
   Transcribing, Thinking, Answering, Working on it, Needs your OK, Done,
   Working with you, or an error.
   Small grey top line for context (what it sees, the question, the last
-  thing heard). Tools (settings, close) appear on hover only. Answer actions
+  thing heard). No sound meter: the label says Listening. Tools (settings,
+  close) sit at the right edge and appear on hover only. Answer actions
   (Insert, Copy, New) appear only when an answer is finished.
+- **Latest answer only.** A new question replaces what is on screen (the AI
+  still has the earlier turns). A live check-in keeps the last answer until
+  it has something to say.
+- **Tucks away.** 5 s after Done the notch shrinks back and hides. The mouse
+  over it holds it open (2 s after it leaves); typing, settings, a step
+  waiting for an OK, an error, a notice and live mode never tuck.
+- **Cheap to draw.** No `filter`/`backdrop-filter` on anything that
+  animates, no `will-change` on the morphing shape. While an answer streams
+  the native window grows in 96 px steps and fits exactly when it is done,
+  so it is not resized for every line.
 - **State colours** (`STATES` in `main.js`) drive `--glow`: listening
   `#ffc18f`, transcribing `#ff99a8`, preparing `#ffeb85`, thinking
   `#c299ff`, answering `#82ff9e`, acting `#9fe3c4`, confirm `#ffd58a`,

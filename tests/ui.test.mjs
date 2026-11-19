@@ -30,6 +30,8 @@ const fake = () => {
     when: { kind: "repeat", time: "09:00", days: [0, 1, 2, 3, 4] }, describe: "every weekday at 09:00", next: "Fri 20 Nov, 09:00", last: "" }];
   const emit = (name, payload) => (listeners[name] || []).forEach((fn) => fn({ payload }));
   window.__fake = { calls, emit, cliFound: true, failAsk: null, nextTurn: () => ++turn };
+  // Finished answers tuck away after 5 s; the test turns that on where it checks it.
+  window.__tuckMs = 1e9;
   // The real page can load before the app has finished starting, when every
   // command fails. Start the same way.
   let starting = 3;
@@ -91,6 +93,12 @@ const snap = async (name) => shots && (await page.waitForTimeout(700), page.scre
 const calls = (cmd) => page.evaluate((c) => window.__fake.calls.filter((x) => x[0] === c).map((x) => x[1]), cmd);
 const emit = (name, payload) => page.evaluate(([n, p]) => window.__fake.emit(n, p), [name, payload]);
 const notch = (attr) => page.getAttribute("#notch", "data-" + attr);
+// The settings and close buttons line up with the row they sit in.
+const toolsInLine = () => page.evaluate(() => {
+  const mid = (n) => { const r = n.getBoundingClientRect(); return r.top + r.height / 2; };
+  const view = document.getElementById("notch").dataset.view;
+  return Math.abs(mid(document.getElementById("tools")) - mid(document.getElementById(view === "input" ? "prompt" : "label")));
+});
 const wake = (typing) => emit("wake", { title: "Inbox - Gmail", process: "chrome.exe", has_screen: true, typing });
 
 /* ----- start-up before the app is ready ----- */
@@ -112,18 +120,16 @@ await emit("phase", { phase: "listening", text: "" });
 assert.equal(await notch("state"), "listening");
 assert.equal(await page.textContent("#label"), "Listening");
 assert.equal(await page.textContent("#top-line"), "Seeing Inbox - Gmail");
-assert.ok(await page.isVisible("#meter"));
+assert.equal(await page.locator("#meter").count(), 0, "only the label while listening, no sound meter");
 assert.ok(await page.isHidden("#panel"), "nothing but the notch while listening");
 await page.waitForTimeout(600);
 const small = await page.locator("#notch").boundingBox();
 assert.ok(small.height < 70 && small.width < 330, "collapsed, it is just a notch");
-for (const level of [0.1, 0.5, 0.9, 1, 0.6, 0.2, 0.8, 0.4]) await emit("level", level);
-assert.ok((await page.locator("#meter i.lit").count()) > 5);
+for (const level of [0.1, 0.5, 0.9]) await emit("level", level); // still sent by the app; ignored
 await snap("1-listening");
 
 await emit("phase", { phase: "transcribing", text: "" });
 assert.equal(await page.textContent("#label"), "Transcribing");
-assert.ok(await page.isHidden("#meter"));
 
 // The answer starts before the question is announced; nothing may be lost.
 const voiceTurn = await page.evaluate(() => window.__fake.nextTurn());
@@ -156,6 +162,24 @@ assert.equal(await page.textContent(".msg.ai pre code"), "const x = 1 < 2;");
 assert.equal(await page.locator(".msg.ai li").count(), 2);
 await snap("3-done");
 
+// Settings and close sit at the right edge; the status stays centred.
+await page.hover("#label");
+await page.waitForTimeout(250); // the tools fade in
+await snap("3b-done-hover");
+{
+  const tools = await page.locator("#tools").boundingBox();
+  const right = big.x + big.width - (tools.x + tools.width);
+  assert.ok(right >= 6 && right <= 20, `tools at the right edge (${right}px in)`);
+  const row = await page.evaluate(() => {
+    const boxes = [...document.querySelectorAll("#row > *")].filter((n) => n.id !== "tools" && n.offsetParent).map((n) => n.getBoundingClientRect());
+    return { l: Math.min(...boxes.map((b) => b.left)), r: Math.max(...boxes.map((b) => b.right)) };
+  });
+  assert.ok(Math.abs((row.l + row.r) / 2 - (big.x + big.width / 2)) <= 2, "the status is centred");
+  assert.ok(tools.x > row.r + 8, "the tools do not touch the status");
+  assert.ok((await toolsInLine()) <= 1, "the tools are level with the status");
+  assert.ok(await page.evaluate(() => getComputedStyle(document.getElementById("tools")).opacity === "1"), "shown on hover");
+}
+
 // The global insert key pastes the raw answer, not HTML.
 await emit("insert-request", null);
 const inserted = (await calls("insert_text"))[0].text;
@@ -180,6 +204,28 @@ assert.equal(await notch("state"), "done");
 await emit("phase", { phase: "preparing", text: "Downloading speech model 34%" });
 assert.equal(await page.textContent("#top-line"), "Downloading speech model 34%");
 
+/* ----- a finished answer tucks itself away ----- */
+
+await page.evaluate(() => Object.assign(window, { __tuckMs: 300, __tuckAfterHoverMs: 200 }));
+{
+  const t = await page.evaluate(() => window.__fake.nextTurn());
+  await emit("asked", { turn: t, text: "what time is it in Tokyo" });
+  assert.equal(await page.locator(".msg.ai").count(), 1, "the previous answer is gone; only the latest shows");
+  await emit("ai", { turn: t, kind: "delta", text: "It's 9:14 PM in Tokyo." });
+  await page.waitForFunction(() => document.querySelector(".msg.ai")?.textContent === "It's 9:14 PM in Tokyo.");
+  await page.hover("#thread"); // the mouse is on it when the answer finishes
+  await emit("ai", { turn: t, kind: "done", text: "" });
+  const hides = (await calls("hide")).length;
+  await page.waitForTimeout(900);
+  assert.ok(await page.isVisible("#thread"), "it stays open while the mouse is over it");
+  assert.equal((await calls("hide")).length, hides);
+  await page.mouse.move(5, 690); // away from the notch
+  await page.waitForFunction((n) => window.__fake.calls.filter((c) => c[0] === "hide").length === n + 1, hides, { timeout: 3000 });
+  assert.ok(await page.isHidden("#panel"), "it shrank back to the notch before going");
+  assert.equal(await notch("state"), "done");
+  await page.evaluate(() => Object.assign(window, { __tuckMs: 1e9, __tuckAfterHoverMs: 1e9 }));
+}
+
 /* ----- typing: tap to open ----- */
 
 await wake(true);
@@ -187,13 +233,14 @@ assert.equal(await notch("view"), "input");
 await page.fill("#prompt", "make it shorter");
 await page.keyboard.press("Enter");
 assert.deepEqual((await calls("ask")).at(-1), { prompt: "make it shorter", withScreen: true });
-await page.waitForFunction(() => document.querySelectorAll(".msg.ai").length === 2);
 assert.equal(await notch("state"), "answering");
-// The piece sent before the turn id was known was kept.
-await page.waitForFunction(() => document.querySelectorAll(".msg.ai")[1].textContent.startsWith("Hi Ben,"));
+// Only this question's answer is shown, and the piece sent before the turn
+// id was known was kept.
+await page.waitForFunction(() => document.querySelectorAll(".msg.ai").length === 1 && document.querySelector(".msg.ai").textContent.startsWith("Hi Ben,"));
+assert.equal(await page.locator(".msg.user").count(), 1);
 
 // Model output is never treated as HTML.
-const typedTurn = voiceTurn + 1;
+const typedTurn = voiceTurn + 2; // one more turn ran in the tuck check
 await emit("ai", { turn: typedTurn, kind: "delta", text: ' <img src=x onerror="window.__pwned=1"> ok' });
 await emit("ai", { turn: typedTurn, kind: "done", text: "" });
 await page.waitForFunction(() => !document.querySelector(".streaming"));
@@ -213,8 +260,9 @@ assert.deepEqual((await calls("ask")).at(-1), { prompt: "", withScreen: false })
 await page.keyboard.press("Escape");
 assert.equal((await calls("stop")).length, 1);
 assert.ok(await page.isHidden("#stop"));
+const hidesBeforeEsc = (await calls("hide")).length;
 await page.keyboard.press("Escape");
-assert.equal((await calls("hide")).length, 1);
+assert.equal((await calls("hide")).length, hidesBeforeEsc + 1);
 
 // After a stop the next question starts a clean conversation.
 await page.fill("#prompt", "again");
@@ -233,6 +281,13 @@ assert.equal((await calls("new_chat")).length, 1);
 await page.waitForTimeout(600);
 assert.ok((await page.locator("#notch").boundingBox()).height < 70, "it shrinks back to a notch");
 assert.ok((await page.locator("#prompt").boundingBox()).height > 15, "the text field is usable after a turn");
+assert.ok((await toolsInLine()) <= 1, "the tools are level with the text field");
+{
+  const n = await page.locator("#notch").boundingBox();
+  const t = await page.locator("#tools").boundingBox();
+  const p = await page.locator("#prompt").boundingBox();
+  assert.ok(n.x + n.width - (t.x + t.width) <= 20 && t.x >= p.x + p.width, "typing: the tools are at the right, after the field");
+}
 await snap("5-typing");
 
 // A failed ask (for example, CLI missing) is shown, not swallowed.
@@ -331,7 +386,8 @@ await page.keyboard.press("Control+n");
 await emit("live", true);
 assert.equal(await notch("state"), "live");
 assert.equal(await page.textContent("#label"), "Working with you");
-assert.ok(await page.isVisible("#meter"));
+assert.ok(await page.isVisible("#mic"));
+assert.ok((await toolsInLine()) <= 1, "the tools are level with the status under a top line");
 assert.ok(await page.isHidden("#panel"), "only the notch until there is something to say");
 
 // What is heard shows in the small line, so it is clear it is following.
@@ -553,6 +609,8 @@ await page.keyboard.press("Escape");
 for (const edge of ["left", "right", "top"]) {
   await emit("settings-changed", { ...saved, dock_edge: edge, opacity: 0.92 });
   assert.equal(await page.getAttribute("#shell", "data-edge"), edge);
+  // The app places the window against that screen edge; do the same here.
+  await page.evaluate((e) => (document.getElementById("shell").style.margin = { left: "160px auto 0 0", right: "160px 0 0 auto", top: "0 auto" }[e]), edge);
   if (edge !== "top") await snap("7-" + edge);
 }
 

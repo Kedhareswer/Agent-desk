@@ -10,7 +10,9 @@ use std::{
     sync::Mutex,
     time::Instant,
 };
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+use whisper_rs::{
+    FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
+};
 
 /// (settings name, file name, size in bytes) of the models offered.
 pub const MODELS: &[(&str, &str, u64)] = &[
@@ -91,6 +93,18 @@ pub fn ensure_model(dir: &Path, name: &str, progress: &dyn Fn(u8)) -> Result<Pat
 struct Loaded {
     name: String,
     ctx: WhisperContext,
+    /// Whisper's working memory, made once and reused: creating it costs
+    /// tens of milliseconds on every question otherwise.
+    state: Option<WhisperState>,
+}
+
+/// How much of Whisper's 30-second window to run for a clip of `samples`.
+/// Whisper always works on 30 s (1500 frames of 20 ms) even for a 3-word
+/// question; running only what the clip needs, plus a margin, makes the
+/// slowest step several times faster on short questions.
+pub fn audio_ctx(samples: usize) -> i32 {
+    let frames = samples.div_ceil(320) + 128; // 320 samples = 20 ms; margin 2.5 s
+    (frames.max(512).div_ceil(64) * 64).min(1500) as i32
 }
 
 #[derive(Default)]
@@ -116,31 +130,35 @@ impl Transcriber {
         *slot = Some(Loaded {
             name: name.to_string(),
             ctx,
+            state: None,
         });
         Ok(())
     }
 
     /// Turn 16 kHz mono audio into text. `load` must have succeeded first.
     pub fn transcribe(&self, samples: &[f32]) -> Result<String, String> {
-        let slot = self
+        let mut slot = self
             .loaded
             .lock()
             .map_err(|_| "speech engine lock poisoned")?;
-        let loaded = slot.as_ref().ok_or("The speech model is not loaded.")?;
+        let loaded = slot.as_mut().ok_or("The speech model is not loaded.")?;
         *self.last_used.lock().unwrap() = Some(Instant::now());
+        // Holding the keys a moment before and after speaking is common;
+        // that silence is only extra work.
+        let samples = crate::audio::trim_silence(samples);
 
-        let mut state = loaded.ctx.create_state().map_err(|e| e.to_string())?;
+        if loaded.state.is_none() {
+            loaded.state = Some(loaded.ctx.create_state().map_err(|e| e.to_string())?);
+        }
+        let english = loaded.name.ends_with(".en");
+        let state = loaded.state.as_mut().expect("just made");
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         let threads = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4)
             .clamp(1, 8);
         params.set_n_threads(threads as i32);
-        params.set_language(if loaded.name.ends_with(".en") {
-            Some("en")
-        } else {
-            None
-        });
+        params.set_language(if english { Some("en") } else { None });
         params.set_print_special(false);
         params.set_print_progress(false);
         params.set_print_realtime(false);
@@ -155,6 +173,7 @@ impl Transcriber {
         if audio.len() < 16_000 + 1_600 {
             audio.resize(16_000 + 1_600, 0.0);
         }
+        params.set_audio_ctx(audio_ctx(audio.len()));
         state
             .full(params, &audio)
             .map_err(|e| format!("Speech recognition failed: {e}"))?;
@@ -200,6 +219,23 @@ pub fn clean(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_clips_use_a_shorter_window() {
+        // A 3-second question runs about a third of the full window.
+        assert_eq!(audio_ctx(3 * 16_000), 512);
+        assert_eq!(audio_ctx(10 * 16_000), 640);
+        // Never more than Whisper's own 30 s, and a multiple of 64.
+        assert_eq!(audio_ctx(40 * 16_000), 1500);
+        for secs in 1..30 {
+            let n = audio_ctx(secs * 16_000);
+            assert!(n == 1500 || n % 64 == 0);
+            assert!(
+                n as usize >= secs * 50 + 128 || n == 1500,
+                "covers the clip"
+            );
+        }
+    }
 
     #[test]
     fn noise_tags_are_removed() {

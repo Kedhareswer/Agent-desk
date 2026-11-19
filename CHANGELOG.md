@@ -10,6 +10,20 @@ the release workflow uses that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+### Changed
+
+- The notch shows only "Listening" while you talk; the dot meter is gone.
+- A finished answer goes away by itself after 5 seconds. Keep the mouse
+  over it to keep it open.
+- A follow-up question replaces the previous answer instead of piling up
+  under it. The conversation itself is still remembered.
+- Settings and close are now at the right edge of the notch.
+- Faster speech to text: silence before and after you speak is skipped,
+  Whisper only processes as much audio as you said, and its working memory
+  is reused between questions.
+- Smoother on slower computers: the indicator's glow and the window
+  resizing while an answer streams in cost much less.
+
 ### Added
 
 - Agent Desk can now act on your computer: open web pages and apps, switch
