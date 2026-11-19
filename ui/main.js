@@ -56,6 +56,7 @@ const state = {
   editing: null,       // schedule being edited (id 0 = new)
   startFresh: false,   // the engine lost the conversation; clear before the next question
   lastActivity: Date.now(),
+  lastEvent: 0,         // when the answer in progress last showed a sign of life
   askedAt: 0,
   live: false,         // "work with me" mode is on
   quiet: null,         // a live check-in whose answer is not shown yet
@@ -279,6 +280,7 @@ function beginTurn(shown, quiet = false) {
   state.answerNode = addMessage("ai", "");
   state.answerNode.hidden = true;
   state.askedAt = performance.now();
+  state.lastEvent = state.askedAt;
   state.lastActivity = Date.now();
   state.busy = true;
   if (quiet) {
@@ -364,7 +366,15 @@ function onAction(p) {
     if (state.asking === p.id) state.asking = 0;
     if (p.status === "running") setPhase("acting");
     else if (state.busy) setPhase("thinking");
+    else {
+      // A step with no answer in progress: nothing else will end it, so
+      // go back to rest now instead of showing "Working on it" forever.
+      settleSteps();
+      rest();
+      if (state.phase === "done") scheduleTuck();
+    }
   }
+  state.lastEvent = performance.now();
   refreshPanel();
   el.thread.scrollTop = el.thread.scrollHeight;
 }
@@ -499,6 +509,7 @@ async function send() {
 function onAiEvent(payload) {
   if (payload.turn > state.turn || state.turn === Infinity) return void state.early.push(payload);
   if (payload.turn !== state.turn) return;
+  state.lastEvent = performance.now();
   if (payload.kind === "delta") {
     state.answer += payload.text;
     state.segment += payload.text;
@@ -557,6 +568,20 @@ function fail(message) {
   refreshPanel();
   morph();
 }
+
+/* ---------- never stuck ---------- */
+
+// An answer that shows no sign of life for this long (no text, no step) is
+// stopped and said so, instead of the notch working forever. A step that
+// waits for the user's OK has its own two-minute limit and is not counted.
+const STALL_MS = () => window.__stallMs ?? 180000;
+setInterval(() => {
+  if (!state.busy || state.quiet || state.asking || state.turn === Infinity) return;
+  if (performance.now() - (state.lastEvent || state.askedAt) < STALL_MS()) return;
+  invoke("stop").catch(() => {});
+  state.turn = -1; // late events from the stopped answer are ignored
+  fail("No reply for a while, so Agent Desk stopped waiting. Ask again to try once more.");
+}, 1000);
 
 async function stop() {
   if (!state.busy) return;

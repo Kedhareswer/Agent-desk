@@ -401,6 +401,46 @@ assert.equal(await page.locator(".act-buttons").count(), 0);
 await emit("action", { ...send, id: 8, turn: 1, status: "ask" });
 assert.equal(await page.locator(".msg.act[data-id='8']").count(), 0);
 
+/* ----- never stuck ----- */
+
+// A step that arrives with no answer in progress does not leave the notch
+// "Working on it": once it is done the notch goes back to rest.
+{
+  const t = await page.evaluate(() => window.__fake.nextTurn());
+  await emit("asked", { turn: t, text: "what's on my screen" });
+  await emit("ai", { turn: t, kind: "delta", text: "A Notepad window." });
+  await emit("ai", { turn: t, kind: "done", text: "" });
+  await emit("action", { id: 40, turn: t, kind: "click", summary: "Click “Text editor”", detail: "", status: "running", result: "" });
+  assert.equal(await notch("state"), "acting");
+  await emit("action", { id: 40, turn: t, kind: "click", summary: "Click “Text editor”", detail: "", status: "done", result: "" });
+  assert.equal(await notch("state"), "done", "back to rest after a stray step");
+  await page.waitForFunction(() => !document.querySelector(".msg.act"), null, { timeout: 2000 });
+}
+// An answer with no sign of life for too long is stopped and says so.
+{
+  await page.evaluate(() => (window.__stallMs = 400));
+  const stops = (await calls("stop")).length;
+  const t = await page.evaluate(() => window.__fake.nextTurn());
+  await emit("asked", { turn: t, text: "check my repos" });
+  await emit("action", { id: 41, turn: t, kind: "open_url", summary: "Open github.com", detail: "", status: "running", result: "" });
+  await page.waitForFunction(() => document.getElementById("notch").dataset.state === "error", null, { timeout: 4000 });
+  assert.equal((await calls("stop")).length, stops + 1, "the stuck answer was stopped");
+  assert.match(await page.textContent(".msg.error"), /No reply for a while/);
+  await emit("ai", { turn: t, kind: "delta", text: "late" });
+  assert.equal(await page.locator(".msg.ai", { hasText: "late" }).count(), 0, "late events are ignored");
+  // A step waiting for the user's OK is not a stall.
+  const t2 = await page.evaluate(() => window.__fake.nextTurn());
+  await emit("asked", { turn: t2, text: "send it" });
+  await emit("action", { id: 42, turn: t2, kind: "click", summary: "Click “Send”", detail: "", status: "ask", result: "" });
+  await page.waitForTimeout(1600);
+  assert.equal(await notch("state"), "confirm", "waiting for an OK is not stuck");
+  await page.click(".act-buttons button[data-decision=deny]");
+  await emit("action", { id: 42, turn: t2, kind: "click", summary: "Click “Send”", detail: "", status: "denied", result: "" });
+  await emit("ai", { turn: t2, kind: "done", text: "" });
+  await page.evaluate(() => (window.__stallMs = 1e9));
+  await page.keyboard.press("Control+n");
+}
+
 /* ----- earlier answers ----- */
 
 // Finished answers are kept and can be read again from the notch.
@@ -411,9 +451,10 @@ assert.ok(await page.isVisible("#history"));
 assert.ok(await page.isHidden("#thread"), "the history takes the panel's place");
 const hist = await page.locator(".hist").allTextContents();
 assert.ok(hist.length >= 2, `earlier answers are listed (${hist.length})`);
-assert.match(hist[0], /open Chrome and open GitHub/);
-assert.match(hist[0], /top contributor on 3/);
-assert.match(hist[0], /3 steps on your computer/);
+const github = hist.find((h) => /open Chrome and open GitHub/.test(h)) || "";
+assert.match(github, /top contributor on 3/);
+assert.match(github, /3 steps on your computer/);
+assert.ok(!hist.some((h) => /No reply for a while|^\s*$/.test(h)), "only real answers are kept");
 assert.equal(await page.locator(".hist .msg.ai script, .hist .msg.ai img").count(), 0);
 {
   const edges = await page.evaluate(() => {

@@ -310,6 +310,11 @@ bucket/agent-desk.json      Scoop manifest, written by the release workflow
 
 `recovery.rs`. Keep all three parts:
 
+(And never stuck: a step that finishes with no answer streaming turns
+`working` off itself in `tasks.rs`; the UI goes back to rest after such a
+step, and stops an answer with no event for 3 minutes (`STALL_MS`), except
+while a step waits for the user's OK.)
+
 - `RegisterApplicationRestart` makes Windows restart the app after a crash
   or hang (only once it has run for a minute, so a start-up crash cannot
   loop). A panic hook and an unhandled-exception filter write one line to

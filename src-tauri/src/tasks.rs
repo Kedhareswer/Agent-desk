@@ -196,7 +196,14 @@ fn handle_call(app: &AppHandle, name: &str, args: &Value) -> mcp::ToolResult {
     if action.takes_in_private_data() {
         state.private_data.store(true, Ordering::SeqCst);
     }
-    match execute(app, &action, point) {
+    let outcome = execute(app, &action, point);
+    // Normally the working state ends with the answer. A step that came in
+    // with no answer streaming (nothing will end it) ends it itself, so the
+    // glow, pointer and "Working on it" can never be left on.
+    if !state.engine.is_busy() {
+        crate::working(app, false);
+    }
+    match outcome {
         Ok((result, note)) => {
             ev.status = "done";
             ev.result = note;

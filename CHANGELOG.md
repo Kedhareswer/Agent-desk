@@ -34,6 +34,10 @@ the release workflow uses that section as the GitHub Release notes.
 - Scrolling did nothing unless Agent Desk had clicked first: it scrolled
   wherever your own mouse happened to be. It now scrolls the window in
   front (its pointer shows where) and tells the AI what came into view.
+- The notch could stay on "Working on it", with the edge glowing, after a
+  step that ran outside an answer. Such a step now ends the working state
+  itself, and an answer that shows no sign of life for 3 minutes is stopped
+  with a message, so the notch is never left working forever.
 
 ## [0.1.4] - 2026-11-19
 
