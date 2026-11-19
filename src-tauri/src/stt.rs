@@ -98,6 +98,21 @@ struct Loaded {
     state: Option<WhisperState>,
 }
 
+/// whisper.cpp is built for AVX2/FMA/F16C (see the workflows). On a CPU
+/// without them it would crash with an illegal instruction, so check first.
+pub fn cpu_supported() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        std::is_x86_feature_detected!("avx2")
+            && std::is_x86_feature_detected!("fma")
+            && std::is_x86_feature_detected!("f16c")
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        true
+    }
+}
+
 /// How much of Whisper's 30-second window to run for a clip of `samples`.
 /// Whisper always works on 30 s (1500 frames of 20 ms) even for a 3-word
 /// question; running only what the clip needs, plus a margin, makes the
@@ -123,6 +138,9 @@ impl Transcriber {
         *self.last_used.lock().unwrap() = Some(Instant::now());
         if slot.as_ref().is_some_and(|l| l.name == name) {
             return Ok(());
+        }
+        if !cpu_supported() {
+            return Err("Speech recognition needs a processor with AVX2 (most made since 2013). You can still type: tap Ctrl + Alt.".into());
         }
         let path = model_path(dir, name);
         let ctx = WhisperContext::new_with_params(&path, WhisperContextParameters::default())

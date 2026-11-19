@@ -10,6 +10,14 @@ the release workflow uses that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+### Fixed
+
+- Agent Desk closed itself right after "Transcribing" on many computers,
+  including Intel 12th to 14th generation laptops. The speech engine had been
+  built for processors with AVX-512; it is now built for AVX2, which all
+  processors from about 2013 on have. On older processors talking shows a
+  message instead of crashing, and typing still works.
+
 ## [0.1.3] - 2026-11-19
 
 ### Security
