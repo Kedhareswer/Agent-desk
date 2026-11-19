@@ -676,6 +676,13 @@ await glow.evaluate(() => window.__fake.emit("glow", true));
 await glow.waitForTimeout(500);
 assert.equal(await glow.evaluate(() => getComputedStyle(document.getElementById("glow")).opacity), "1");
 if (shots) await glow.screenshot({ path: path.join(shots, "8-glow.png") });
+// While Agent Desk acts on the computer the glow takes its working colour.
+await glow.evaluate(() => window.__fake.emit("glow", "acting"));
+assert.ok(await glow.evaluate(() => document.getElementById("glow").classList.contains("acting")));
+if (shots) { await glow.waitForTimeout(500); await glow.screenshot({ path: path.join(shots, "8-glow-acting.png") }); }
+await glow.evaluate(() => window.__fake.emit("glow", false));
+await glow.waitForTimeout(500);
+assert.equal(await glow.evaluate(() => getComputedStyle(document.getElementById("glow")).opacity), "0");
 
 assert.deepEqual(errors, []);
 await browser.close();

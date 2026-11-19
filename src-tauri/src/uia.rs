@@ -206,8 +206,10 @@ mod imp {
         CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
     };
     use windows::Win32::UI::Accessibility::{
-        CUIAutomation8, IUIAutomation, IUIAutomationValuePattern, TreeScope_Descendants,
-        UIA_ValuePatternId,
+        CUIAutomation8, IUIAutomation, IUIAutomationInvokePattern,
+        IUIAutomationSelectionItemPattern, IUIAutomationTogglePattern, IUIAutomationValuePattern,
+        TreeScope_Descendants, UIA_InvokePatternId, UIA_SelectionItemPatternId,
+        UIA_TogglePatternId, UIA_ValuePatternId,
     };
     use windows::Win32::UI::HiDpi::{
         SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
@@ -309,24 +311,84 @@ mod imp {
         }
     }
 
-    /// Move the real cursor to a point in a smooth glide, so the user can
-    /// see where Agent Desk is about to act.
-    pub fn glide_to(x: i32, y: i32) {
+    /// Where the user's cursor is (physical pixels).
+    pub fn cursor_pos() -> (i32, i32) {
+        physical_pixels();
+        let mut p = POINT::default();
+        unsafe {
+            let _ = GetCursorPos(&mut p);
+        }
+        (p.x, p.y)
+    }
+
+    /// Press what is at a screen point the way assistive tools do, without
+    /// the mouse: invoke a button or link, toggle a check box, select a tab
+    /// or list item. Looks at the element and up to two parents (a label
+    /// inside a button). False when nothing there can be pressed this way.
+    pub fn press_at(x: i32, y: i32) -> bool {
+        physical_pixels();
+        let Ok(uia) = automation() else { return false };
+        unsafe {
+            let Ok(mut e) = uia.ElementFromPoint(POINT { x, y }) else {
+                return false;
+            };
+            let walker = uia.ControlViewWalker().ok();
+            for _ in 0..3 {
+                if let Ok(p) =
+                    e.GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId)
+                {
+                    return p.Invoke().is_ok();
+                }
+                if let Ok(p) =
+                    e.GetCurrentPatternAs::<IUIAutomationTogglePattern>(UIA_TogglePatternId)
+                {
+                    return p.Toggle().is_ok();
+                }
+                if let Ok(p) = e.GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(
+                    UIA_SelectionItemPatternId,
+                ) {
+                    return p.Select().is_ok();
+                }
+                let Some(w) = &walker else { break };
+                match w.GetParentElement(&e) {
+                    Ok(parent) => e = parent,
+                    Err(_) => break,
+                }
+            }
+            false
+        }
+    }
+
+    /// Give keyboard focus to the element at a point (a text box), without
+    /// the mouse. False when it did not take focus.
+    pub fn focus_at(x: i32, y: i32) -> bool {
+        physical_pixels();
+        let Ok(uia) = automation() else { return false };
+        unsafe {
+            let Ok(e) = uia.ElementFromPoint(POINT { x, y }) else {
+                return false;
+            };
+            if e.SetFocus().is_err() {
+                return false;
+            }
+            sleep(Duration::from_millis(60));
+            e.CurrentHasKeyboardFocus().is_ok_and(|b| b.as_bool())
+        }
+    }
+
+    /// Do something that needs the real cursor at a point (a click on a
+    /// spot in a screenshot, scrolling), then put the user's cursor back
+    /// where it was. It is away for well under a tenth of a second.
+    pub fn at_point(x: i32, y: i32, act: impl FnOnce()) {
         physical_pixels();
         unsafe {
-            let mut from = POINT::default();
-            let _ = GetCursorPos(&mut from);
-            let distance = (((x - from.x).pow(2) + (y - from.y).pow(2)) as f64).sqrt();
-            let steps = (distance / 25.0).clamp(8.0, 40.0) as i32;
-            for s in 1..=steps {
-                let t = s as f64 / steps as f64;
-                let t = 1.0 - (1.0 - t).powi(3); // ease out
-                let _ = SetCursorPos(
-                    from.x + ((x - from.x) as f64 * t).round() as i32,
-                    from.y + ((y - from.y) as f64 * t).round() as i32,
-                );
-                sleep(Duration::from_millis(10));
-            }
+            let mut home = POINT::default();
+            let _ = GetCursorPos(&mut home);
+            let _ = SetCursorPos(x, y);
+            sleep(Duration::from_millis(15));
+            act();
+            sleep(Duration::from_millis(35));
+            let _ = SetCursorPos(home.x, home.y);
         }
     }
 
@@ -468,7 +530,18 @@ mod imp {
     pub fn element_at(_x: i32, _y: i32) -> Option<(String, &'static str)> {
         None
     }
-    pub fn glide_to(_x: i32, _y: i32) {}
+    pub fn cursor_pos() -> (i32, i32) {
+        (0, 0)
+    }
+    pub fn press_at(_x: i32, _y: i32) -> bool {
+        false
+    }
+    pub fn focus_at(_x: i32, _y: i32) -> bool {
+        false
+    }
+    pub fn at_point(_x: i32, _y: i32, act: impl FnOnce()) {
+        act()
+    }
     pub fn click(_right: bool, _double: bool) {}
     pub fn scroll(_lines: i32, _horizontal: bool) {}
     pub fn pdf_pages(_path: &str, _max_pages: u32) -> Result<(u32, Vec<Vec<u8>>), String> {

@@ -9,6 +9,7 @@ mod files;
 mod hotkey;
 mod mcp;
 mod platform;
+mod pointer;
 mod recovery;
 mod schedule;
 mod settings;
@@ -124,6 +125,8 @@ struct App {
     dir: PathBuf,
     /// The request being answered, kept on disk until it finishes.
     task: Mutex<Option<recovery::Pending>>,
+    /// Agent Desk is acting on the computer in the current answer.
+    acting: AtomicBool,
     /// Highest turn whose answer has finished.
     finished_turn: AtomicU64,
     /// A request left unfinished when the app last closed, not yet offered.
@@ -464,11 +467,32 @@ fn toggle_overlay(app: &AppHandle) {
 
 /// The soft light around the screen edge while listening.
 fn glow(app: &AppHandle, on: bool) {
+    glow_mode(app, on.then_some("listening"));
+}
+
+/// Agent Desk is acting on the computer (true), or has finished (false):
+/// the screen edge glows in the working colour meanwhile, and its pointer
+/// goes away at the end.
+pub fn working(app: &AppHandle, on: bool) {
+    let state = app.state::<App>();
+    if state.acting.swap(on, Ordering::SeqCst) == on {
+        return;
+    }
+    if on {
+        glow_mode(app, Some("acting"));
+    } else {
+        pointer::hide(app);
+        glow_mode(app, None);
+    }
+}
+
+/// The screen-edge glow: "listening", "acting" or off.
+fn glow_mode(app: &AppHandle, mode: Option<&'static str>) {
     let Some(win) = app.get_webview_window("glow") else {
         return;
     };
     let state = app.state::<App>();
-    if on {
+    if let Some(mode) = mode {
         if !state.settings.lock().unwrap().edge_glow {
             return;
         }
@@ -482,7 +506,7 @@ fn glow(app: &AppHandle, on: bool) {
         let _ = win.set_ignore_cursor_events(true);
         webview_memory(&win, false);
         let _ = win.show();
-        let _ = app.emit_to("glow", "glow", true);
+        let _ = app.emit_to("glow", "glow", mode);
     } else if win.is_visible().unwrap_or(false) {
         let _ = app.emit_to("glow", "glow", false);
         std::thread::spawn(move || {
@@ -1018,7 +1042,7 @@ fn send_live(app: &AppHandle, lines: &[String], with_shot: bool) -> Result<u64, 
 fn apply_settings(app: &AppHandle, s: &Settings) -> Option<String> {
     let mut problem = None;
 
-    for label in ["main", "glow"] {
+    for label in ["main", "glow", "pointer"] {
         if let Some(win) = app.get_webview_window(label) {
             let _ = win.set_content_protected(s.hide_from_capture);
         }
@@ -1256,6 +1280,7 @@ fn stop(app: AppHandle, state: State<App>) {
     tasks::deny_all(&state);
     state.engine.stop();
     task_finished(&app, u64::MAX);
+    working(&app, false);
 }
 
 /// A request left unfinished when the app last closed, offered once.
@@ -1497,7 +1522,7 @@ fn build_tray(app: &AppHandle, hide_from_capture: bool) -> tauri::Result<()> {
                     s.clone()
                 };
                 let _ = updated.save(&state.dir);
-                for label in ["main", "glow"] {
+                for label in ["main", "glow", "pointer"] {
                     if let Some(win) = app.get_webview_window(label) {
                         let _ = win.set_content_protected(updated.hide_from_capture);
                     }
@@ -1643,7 +1668,10 @@ fn main() {
             let emit: Arc<dyn Fn(AiEvent) + Send + Sync> = Arc::new(move |event| {
                 match event.kind {
                     "lost" => return answer_lost(&emitter, event),
-                    "done" | "error" => task_finished(&emitter, event.turn),
+                    "done" | "error" => {
+                        task_finished(&emitter, event.turn);
+                        working(&emitter, false);
+                    }
                     _ => {}
                 }
                 let _ = emitter.emit_to("main", "ai", event);
@@ -1680,6 +1708,7 @@ fn main() {
                 updates: update::Updates::default(),
                 update_item: Mutex::new(None),
                 task: Mutex::new(None),
+                acting: AtomicBool::new(false),
                 finished_turn: AtomicU64::new(0),
                 recovered: Mutex::new(leftover.clone()),
             });
