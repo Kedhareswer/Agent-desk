@@ -307,6 +307,19 @@ mod imp {
             .collect()
     }
 
+    /// The top-level window under a screen point.
+    pub fn root_window_at(x: i32, y: i32) -> isize {
+        use windows::Win32::Foundation::POINT;
+        use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, WindowFromPoint, GA_ROOT};
+        unsafe {
+            let h = WindowFromPoint(POINT { x, y });
+            if h.0.is_null() {
+                return 0;
+            }
+            GetAncestor(h, GA_ROOT).0 as isize
+        }
+    }
+
     /// Bring a window to the front, restoring it if minimised.
     pub fn focus_window(window: isize) {
         unsafe {
@@ -451,6 +464,9 @@ mod imp {
         Vec::new()
     }
     pub fn focus_window(_window: isize) {}
+    pub fn root_window_at(_x: i32, _y: i32) -> isize {
+        0
+    }
     pub fn type_text(_text: &str, _soft_newlines: bool) {}
     pub fn press_keys(_keys: &crate::actions::Keys) {}
     pub fn capture_monitor(_window: isize) -> Option<RawImage> {

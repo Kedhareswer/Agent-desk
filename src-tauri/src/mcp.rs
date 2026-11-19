@@ -59,34 +59,70 @@ impl Server {
 
 /// 128 random bits as hex. The standard library seeds each `RandomState`
 /// from the operating system's random source.
+/// 128 random bits as hex, from the operating system's random source
+/// (BCryptGenRandom on Windows).
 fn random_token() -> String {
-    (0..2)
-        .map(|i| {
-            let mut h = RandomState::new().build_hasher();
-            h.write_u64(i);
-            h.write_u128(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0),
-            );
-            format!("{:016x}", h.finish())
-        })
-        .collect()
+    let mut bytes = [0u8; 16];
+    fill_random(&mut bytes);
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg(windows)]
+fn fill_random(buf: &mut [u8]) {
+    use windows::Win32::Security::Cryptography::{
+        BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+    };
+    let ok = unsafe { BCryptGenRandom(None, buf, BCRYPT_USE_SYSTEM_PREFERRED_RNG) }.is_ok();
+    if !ok {
+        fill_fallback(buf);
+    }
+}
+
+#[cfg(not(windows))]
+fn fill_random(buf: &mut [u8]) {
+    use std::io::Read;
+    let read = std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(buf));
+    if read.is_err() {
+        fill_fallback(buf);
+    }
+}
+
+/// Only if the system source fails: the standard library seeds every
+/// RandomState from the operating system too.
+fn fill_fallback(buf: &mut [u8]) {
+    for (i, chunk) in buf.chunks_mut(8).enumerate() {
+        let mut h = RandomState::new().build_hasher();
+        h.write_usize(i);
+        chunk.copy_from_slice(&h.finish().to_le_bytes()[..chunk.len()]);
+    }
 }
 
 /// Start listening. `tools` is the `tools/list` answer.
+/// At most this many connections are served at once; more are refused.
+const MAX_CONNECTIONS: usize = 16;
+
 pub fn start(tools: Value, handler: Handler) -> std::io::Result<Server> {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     let port = listener.local_addr()?.port();
     let token = random_token();
     let (tools, secret) = (Arc::new(tools), token.clone());
+    let open = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     std::thread::spawn(move || {
+        use std::sync::atomic::Ordering;
         for stream in listener.incoming().flatten() {
-            let (tools, handler, secret) = (tools.clone(), handler.clone(), secret.clone());
+            if open.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
+                open.fetch_sub(1, Ordering::SeqCst);
+                respond(&stream, "503 Service Unavailable", None);
+                continue;
+            }
+            let (tools, handler, secret, open) =
+                (tools.clone(), handler.clone(), secret.clone(), open.clone());
             // A tool call can wait for the user, so each connection gets
             // its own thread.
-            std::thread::spawn(move || serve(stream, &secret, &tools, &handler));
+            std::thread::spawn(move || {
+                serve(stream, &secret, &tools, &handler);
+                open.fetch_sub(1, Ordering::SeqCst);
+            });
         }
     });
     Ok(Server { port, token })
@@ -110,21 +146,36 @@ impl Request {
 }
 
 /// Read one HTTP/1.1 request.
-pub fn read_request(stream: impl Read) -> Option<Request> {
-    let mut reader = BufReader::new(stream);
-    let mut line = String::new();
-    reader.read_line(&mut line).ok()?;
-    let mut parts = line.split_whitespace();
+/// Header bytes accepted per request (request line included).
+const MAX_HEAD: usize = 16 * 1024;
+/// Tool calls are small. Anything huge is not from our CLIs.
+const MAX_BODY: usize = 4 << 20;
+
+/// Read the request line and headers only. The body is read later, and
+/// only from a caller that showed the token.
+pub fn read_head(reader: &mut impl BufRead) -> Option<Request> {
+    let mut used = 0usize;
+    let mut next_line = |reader: &mut dyn BufRead| -> Option<String> {
+        let mut line = Vec::new();
+        let n = reader
+            .take((MAX_HEAD - used) as u64 + 1)
+            .read_until(b'\n', &mut line)
+            .ok()?;
+        used += n;
+        if n == 0 || used > MAX_HEAD {
+            return None;
+        }
+        String::from_utf8(line).ok()
+    };
+    let first = next_line(reader)?;
+    let mut parts = first.split_whitespace();
     let mut req = Request {
         method: parts.next()?.to_string(),
         path: parts.next()?.to_string(),
         ..Default::default()
     };
     loop {
-        line.clear();
-        if reader.read_line(&mut line).ok()? == 0 {
-            return None;
-        }
+        let line = next_line(reader)?;
         let l = line.trim_end();
         if l.is_empty() {
             break;
@@ -137,17 +188,30 @@ pub fn read_request(stream: impl Read) -> Option<Request> {
             return None;
         }
     }
+    Some(req)
+}
+
+/// Read the body announced by Content-Length.
+pub fn read_body(reader: &mut impl Read, req: &mut Request) -> Option<()> {
     let len: usize = req
         .header("content-length")
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
-    // Tool calls are small. Anything huge is not from our CLIs.
-    if len > 4 << 20 {
+    if len > MAX_BODY {
         return None;
     }
     let mut body = vec![0; len];
     reader.read_exact(&mut body).ok()?;
     req.body = String::from_utf8(body).ok()?;
+    Some(())
+}
+
+/// Read a whole request (head and body). Used by the tests.
+#[cfg(test)]
+pub fn read_request(stream: impl Read) -> Option<Request> {
+    let mut reader = BufReader::new(stream);
+    let mut req = read_head(&mut reader)?;
+    read_body(&mut reader, &mut req)?;
     Some(req)
 }
 
@@ -235,11 +299,16 @@ fn respond(mut stream: &TcpStream, status: &str, body: Option<&str>) {
 
 fn serve(stream: TcpStream, token: &str, tools: &Value, handler: &Handler) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
-    let Some(req) = read_request(&stream) else {
+    let mut reader = BufReader::new(&stream);
+    let Some(mut req) = read_head(&mut reader) else {
         return respond(&stream, "400 Bad Request", None);
     };
+    // The token is checked before a single byte of the body is read.
     if !allowed(&req, token) {
         return respond(&stream, "403 Forbidden", None);
+    }
+    if read_body(&mut reader, &mut req).is_none() {
+        return respond(&stream, "400 Bad Request", None);
     }
     if req.path.split('?').next() != Some("/mcp") {
         return respond(&stream, "404 Not Found", None);
@@ -280,6 +349,36 @@ mod tests {
         assert!(!allowed(&req, "abd"));
         assert!(!allowed(&req, "abcd"));
         assert!(read_request("garbage".as_bytes()).is_none());
+    }
+
+    #[test]
+    fn oversized_heads_are_refused() {
+        let big = format!("POST /mcp HTTP/1.1\r\nX: {}\r\n\r\n", "a".repeat(20_000));
+        assert!(read_request(big.as_bytes()).is_none());
+        let huge_body =
+            "POST /mcp HTTP/1.1\r\nAuthorization: Bearer abc\r\nContent-Length: 99999999\r\n\r\n";
+        assert!(read_request(huge_body.as_bytes()).is_none());
+    }
+
+    #[test]
+    fn tokens_are_random_and_long() {
+        let (a, b) = (random_token(), random_token());
+        assert_eq!(a.len(), 32);
+        assert_ne!(a, b);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn strangers_never_get_their_body_read() {
+        // A huge declared body from someone without the token is answered
+        // 403 at once, without waiting for (or buffering) the body.
+        let server = start(json!([]), Arc::new(echo)).unwrap();
+        let mut s = TcpStream::connect(("127.0.0.1", server.port)).unwrap();
+        write!(s, "POST /mcp HTTP/1.1\r\nContent-Length: 4000000\r\n\r\n").unwrap();
+        let mut out = String::new();
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        s.read_to_string(&mut out).unwrap();
+        assert!(out.starts_with("HTTP/1.1 403"), "{out}");
     }
 
     #[test]

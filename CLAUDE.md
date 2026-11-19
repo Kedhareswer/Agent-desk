@@ -161,7 +161,10 @@ bucket/agent-desk.json      Scoop manifest, written by the release workflow
 - An answer is "done" on the stream's `message_delta` with a final stop
   reason, not on the later `result` line (that arrives seconds later).
 - Codex runs per turn as `codex exec --json --skip-git-repo-check -c
-  sandbox_mode=read-only`, resuming the stored thread for follow-ups. With
+  sandbox_mode=read-only --disable shell_tool --disable unified_exec`
+  (`CODEX_NO_SHELL`: Codex's own shell could read any file around Agent
+  Desk's checks; verified against codex-cli 0.170 that these remove it),
+  resuming the stored thread for follow-ups. With
   actions on, `codex_tool_args` adds the same server
   (`-c mcp_servers.agentdesk.url=…`, token via the `AGENT_DESK_MCP_TOKEN`
   environment variable, `default_tools_approval_mode="approve"` because the
@@ -214,14 +217,42 @@ bucket/agent-desk.json      Scoop manifest, written by the release workflow
   `always_allow` (per action type; per command name for saved commands) and
   the user can undo it in Settings. No answer in 2 minutes, Stop, New or
   Quit all count as "no".
+- **Conversation rules** (`Action::must_ask`): once `read_file`,
+  `list_folder` or `read_clipboard` ran in a conversation (`private_data`,
+  reset by New), every `open_url` asks and cannot be always-allowed, so
+  data cannot leave in a link. A link with a query or fragment over 64
+  characters always asks. In a scheduled turn every step asks. While a step
+  waits for the user, every other action is refused, and clicks on Agent
+  Desk's own windows are refused (`refuse_own_window`).
+- **Always allow** (`can_always_allow`, `allow_key`) is per chord for keys,
+  per extension for `open_path`, per label for clicks, per name for saved
+  commands; never for schedules, programs, attachments or links. The
+  `action` event carries `always: false` to hide the button.
+- **Typed text** goes through `clean_typed_text`: `\r` and `\r\n` become
+  `\n` (Enter), other control characters except tab are refused.
+- **Paths** go through `files::check_path` after resolving: network and
+  device paths refused before any file system call, names ending in a dot
+  or space refused, off-limits checked on the canonical path too. Opening
+  asks unless the type is in `SAFE_TO_OPEN` (documents, pictures, media) or
+  it is a folder.
+- **Window security**: a strict CSP in `tauri.conf.json` (no inline
+  scripts; `glow.js` holds the glow page's script). App commands are
+  declared in `build.rs` (`AppManifest`), so each is a permission; only the
+  `main` window gets them (`capabilities/default.json`), the glow window
+  only listens for events (`capabilities/glow.json`). A new command must be
+  added to both `build.rs` and `default.json`. `tests/csp.test.mjs` loads
+  both pages under the policy.
 - **Shown before it runs.** Every step is emitted as an `action` event
   before anything happens, even harmless ones.
 - **Instructions on screen are data.** `ACTIONS_PROMPT` tells the model to
   act only on the user's own words and to treat screen, page and tool text
   as information. Live mode never gets tools (other people's speech).
 - **The server** (`mcp.rs`) binds `127.0.0.1` on a random port, requires a
-  random bearer token per app run, and refuses any request carrying an
-  `Origin` header (a web page). No HTTP or MCP library.
+  random bearer token per app run (BCryptGenRandom), and refuses any
+  request carrying an `Origin` header (a web page). The token is checked
+  before the body is read; headers are capped at 16 KB, bodies at 4 MB,
+  open connections at 16. `mcp.json` is deleted on Quit. No HTTP or MCP
+  library.
 - Typing and keys never go into the notch: `prepare_keyboard` refocuses the
   window the user came from (or the last `focus_window` target).
 

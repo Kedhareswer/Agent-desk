@@ -124,6 +124,11 @@ struct App {
     /// Actions waiting for the user's OK, by action id.
     pending: Mutex<HashMap<u64, std::sync::mpsc::Sender<tasks::Decision>>>,
     action_ids: AtomicU64,
+    /// The user's files or clipboard were read in this conversation, so
+    /// links ask first (they could carry the data off).
+    private_data: AtomicBool,
+    /// The turn a schedule started; every step in it asks first.
+    scheduled_turn: AtomicU64,
     /// Where typing and key presses go; 0 means "the window in front".
     target: Mutex<isize>,
     schedules: Mutex<Vec<schedule::Schedule>>,
@@ -1126,6 +1131,7 @@ fn stop(state: State<App>) {
 fn new_chat(app: AppHandle, state: State<App>) {
     let live = is_live(&app);
     tasks::deny_all(&state);
+    tasks::forget_conversation(&state);
     state.engine.new_chat();
     let s = state.settings.lock().unwrap().clone();
     state.engine.prewarm(
@@ -1340,6 +1346,7 @@ fn build_tray(app: &AppHandle, hide_from_capture: bool) -> tauri::Result<()> {
             "quit" => {
                 tasks::deny_all(&app.state::<App>());
                 app.state::<App>().engine.stop();
+                app.state::<App>().engine.forget_tool_config();
                 app.exit(0);
             }
             _ => {}
@@ -1463,6 +1470,8 @@ fn main() {
             app.manage(App {
                 pending: Mutex::new(HashMap::new()),
                 action_ids: AtomicU64::new(0),
+                private_data: AtomicBool::new(false),
+                scheduled_turn: AtomicU64::new(0),
                 target: Mutex::new(0),
                 schedules: Mutex::new(schedule::load(&dir)),
                 elements: Mutex::new((Vec::new(), None)),

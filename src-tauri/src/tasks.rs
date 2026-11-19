@@ -48,6 +48,8 @@ pub struct ActionEvent {
     /// "ask" | "running" | "done" | "denied" | "failed"
     pub status: &'static str,
     pub result: String,
+    /// Whether "Always allow" may be offered for this step.
+    pub always: bool,
 }
 
 fn emit_action(app: &AppHandle, ev: &ActionEvent) {
@@ -89,6 +91,13 @@ fn handle_call(app: &AppHandle, name: &str, args: &Value) -> mcp::ToolResult {
     if is_live(app) {
         return mcp::ToolResult::error("Actions are not available in live mode.");
     }
+    // One question at a time. Nothing else happens while the user is being
+    // asked, so the AI cannot, say, click the notch's own Allow button.
+    if !state.pending.lock().unwrap().is_empty() {
+        return mcp::ToolResult::error(
+            "A step is waiting for the user's answer. Wait for it before doing anything else.",
+        );
+    }
     let flagged = args
         .get("consequential")
         .and_then(Value::as_bool)
@@ -110,8 +119,27 @@ fn handle_call(app: &AppHandle, name: &str, args: &Value) -> mcp::ToolResult {
         }
         _ => None,
     };
-    let ask = action.needs_confirmation(flagged) && !s.always_allows(&action.allow_key());
+    // Paths are judged by where they really lead (a link named
+    // "report.pdf" can point at a program), so resolve them first.
+    match &mut action {
+        Action::OpenPath { path }
+        | Action::ReadFile { path }
+        | Action::ListFolder { path }
+        | Action::AttachFile { path } => match checked_path(path) {
+            Ok(real) => *path = real.display().to_string(),
+            Err(e) => return mcp::ToolResult::error(e),
+        },
+        _ => {}
+    }
     let turn = state.engine.current_turn();
+    let private_data = state.private_data.load(Ordering::SeqCst);
+    let scheduled = state.scheduled_turn.load(Ordering::SeqCst) == turn && turn != 0;
+    let can_always = action.can_always_allow() && !scheduled;
+    // Some questions can never be skipped: scheduled turns, and links once
+    // private data has been read. Others can be, by "Always allow".
+    let forced = scheduled || (private_data && matches!(action, Action::OpenUrl { .. }));
+    let allowed_before = can_always && s.always_allows(&action.allow_key());
+    let ask = action.must_ask(flagged, private_data, scheduled) && (forced || !allowed_before);
     let mut ev = ActionEvent {
         id: state.action_ids.fetch_add(1, Ordering::SeqCst) + 1,
         turn,
@@ -120,6 +148,7 @@ fn handle_call(app: &AppHandle, name: &str, args: &Value) -> mcp::ToolResult {
         detail: action.detail(),
         status: if ask { "ask" } else { "running" },
         result: String::new(),
+        always: can_always,
     };
     ensure_visible(app);
     emit_action(app, &ev);
@@ -138,7 +167,7 @@ fn handle_call(app: &AppHandle, name: &str, args: &Value) -> mcp::ToolResult {
                     "The user did not allow this, so it was not done. Do not try it another way; say it was not done.",
                 );
             }
-            Decision::Always => {
+            Decision::Always if can_always => {
                 let updated = {
                     let mut settings = state.settings.lock().unwrap();
                     let key = action.allow_key();
@@ -150,7 +179,7 @@ fn handle_call(app: &AppHandle, name: &str, args: &Value) -> mcp::ToolResult {
                 let _ = updated.save(&state.dir);
                 let _ = app.emit("settings-changed", updated);
             }
-            Decision::Allow => {}
+            Decision::Always | Decision::Allow => {}
         }
         ev.status = "running";
         emit_action(app, &ev);
@@ -160,6 +189,10 @@ fn handle_call(app: &AppHandle, name: &str, args: &Value) -> mcp::ToolResult {
         ev.status = "denied";
         emit_action(app, &ev);
         return mcp::ToolResult::text("The user stopped this, so it was not done.");
+    }
+    // From now on links ask: the user's own data is in the conversation.
+    if action.takes_in_private_data() {
+        state.private_data.store(true, Ordering::SeqCst);
     }
     match execute(app, &action, point) {
         Ok((result, note)) => {
@@ -221,12 +254,14 @@ fn resolve_target(app: &AppHandle, target: Target) -> Result<(i32, i32, String),
                     ));
                 }
             }
+            refuse_own_window(app, e.x, e.y)?;
             Ok((e.x, e.y, e.name.clone()))
         }
         Target::Point(x, y) => {
             let geom = (*state.shot.lock().unwrap())
                 .ok_or("Take a screenshot with look_at_screen first; x and y refer to it.")?;
             let (sx, sy) = geom.to_screen(x, y);
+            refuse_own_window(app, sx, sy)?;
             let label = uia::element_at(sx, sy).map(|(n, _)| n).unwrap_or_default();
             Ok((sx, sy, label))
         }
@@ -365,6 +400,20 @@ fn attach(app: &AppHandle, file: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Never click Agent Desk itself (its notch holds the Allow buttons).
+fn refuse_own_window(app: &AppHandle, x: i32, y: i32) -> Result<(), String> {
+    let ours: Vec<isize> = ["main", "glow"]
+        .iter()
+        .filter_map(|l| app.get_webview_window(l))
+        .map(|w| own_hwnd(&w))
+        .filter(|h| *h != 0)
+        .collect();
+    if ours.contains(&platform::root_window_at(x, y)) {
+        return Err("That point is on Agent Desk itself, which cannot be clicked.".into());
+    }
+    Ok(())
+}
+
 fn home() -> PathBuf {
     PathBuf::from(
         std::env::var("USERPROFILE")
@@ -375,17 +424,11 @@ fn home() -> PathBuf {
 
 /// A path the AI gave, made full and checked against the off-limits list.
 fn checked_path(raw: &str) -> Result<PathBuf, String> {
-    let path = files::resolve(raw, &home());
-    if files::is_off_limits(&path) {
-        return Err(
-            "That location holds private keys or app data, so Agent Desk does not open or read it."
-                .into(),
-        );
+    // Before resolving: touching a network path at all leaks credentials.
+    if files::is_network_path(raw) {
+        return Err("Network and device paths are not opened.".into());
     }
-    if !path.exists() {
-        return Err(format!("{} does not exist.", path.display()));
-    }
-    Ok(path)
+    files::check_path(&files::resolve(raw, &home()))
 }
 
 fn profiles(browser: actions::Browser) -> Vec<actions::Profile> {
@@ -756,6 +799,11 @@ pub fn deny_all(state: &App) {
     state.pending.lock().unwrap().clear();
 }
 
+/// A new conversation: nothing private has been read in it yet.
+pub fn forget_conversation(state: &App) {
+    state.private_data.store(false, Ordering::SeqCst);
+}
+
 /* ---------- schedules ---------- */
 
 /// A schedule as the settings list shows it.
@@ -787,6 +835,7 @@ fn views(list: &[Schedule]) -> Vec<ScheduleView> {
 fn run_schedule(app: &AppHandle, item: &Schedule, late_by: i64) -> Result<(), String> {
     let state = app.state::<App>();
     state.engine.new_chat();
+    forget_conversation(&state);
     let info = capture_context(app);
     show_overlay(app, false, info);
     let late = if late_by > 2 {
@@ -801,6 +850,8 @@ fn run_schedule(app: &AppHandle, item: &Schedule, late_by: i64) -> Result<(), St
         item.prompt
     );
     let turn = send_question(app, &prompt, true)?;
+    // Nobody asked for this just now: every step of it asks first.
+    state.scheduled_turn.store(turn, Ordering::SeqCst);
     let _ = app.emit_to(
         "main",
         "asked",

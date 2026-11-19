@@ -288,6 +288,11 @@ pub struct ToolServer {
     pub token: String,
 }
 
+/// Codex's own shell would let it read any file (even read-only), around
+/// Agent Desk's checks. It never needs one: these switch it off. Checked
+/// against codex-cli 0.170 (`codex features list`: shell_tool, unified_exec).
+pub const CODEX_NO_SHELL: [&str; 4] = ["--disable", "shell_tool", "--disable", "unified_exec"];
+
 /// The environment variable Codex reads the server's token from.
 const TOKEN_ENV: &str = "AGENT_DESK_MCP_TOKEN";
 
@@ -366,6 +371,11 @@ impl Engine {
             return None;
         }
         self.tool_server.lock().ok()?.clone()
+    }
+
+    /// Remove the file holding this run's server token (on quit).
+    pub fn forget_tool_config(&self) {
+        let _ = std::fs::remove_file(self.data_dir.join("mcp.json"));
     }
 
     /// Use only these sign-ins. A change starts a new Claude process.
@@ -686,7 +696,8 @@ impl Engine {
             "--skip-git-repo-check",
             "-c",
             "sandbox_mode=read-only",
-        ]);
+        ])
+        .args(CODEX_NO_SHELL);
         if let Some(server) = &server {
             let home = Some(codex_home.clone())
                 .filter(|h| !h.is_empty())
@@ -985,6 +996,11 @@ mod tests {
         let args = codex_tool_args(&server, user).join(" ");
         assert!(
             args.starts_with("--disable apps --disable plugins"),
+            "{args}"
+        );
+        assert_eq!(
+            CODEX_NO_SHELL.join(" "),
+            "--disable shell_tool --disable unified_exec",
             "{args}"
         );
         assert!(args.contains("-c mcp_servers.linear.enabled=false"));

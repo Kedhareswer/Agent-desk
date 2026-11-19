@@ -129,7 +129,20 @@ pub fn is_local_upload_label(label: &str) -> bool {
 /// Labels on a button or link that mean "this sends, deletes, buys or
 /// otherwise commits something". Clicking one waits for the user's OK.
 pub fn is_consequential_label(label: &str) -> bool {
-    const WORDS: [&str; 38] = [
+    const WORDS: [&str; 51] = [
+        "upload",
+        "allow",
+        "authorize",
+        "authorise",
+        "grant",
+        "agree",
+        "yes",
+        "ok",
+        "continue",
+        "commit",
+        "join",
+        "call",
+        "update",
         "send",
         "post",
         "publish",
@@ -532,6 +545,22 @@ mod tests {
     #[test]
     fn consequential_labels() {
         for yes in [
+            "Upload",
+            "Allow",
+            "Authorize app",
+            "Grant access",
+            "I agree",
+            "Yes",
+            "OK",
+            "Continue",
+            "Commit changes",
+            "Join meeting",
+            "Call",
+            "Update now",
+        ] {
+            assert!(is_consequential_label(yes), "{yes}");
+        }
+        for yes in [
             "Send",
             "Send now",
             "Delete conversation",
@@ -555,7 +584,7 @@ mod tests {
             "Search docs",
             "Sending tips",
             "Settings",
-            "Upload from this device",
+            "Settings",
         ] {
             assert!(!is_consequential_label(no), "{no}");
         }
