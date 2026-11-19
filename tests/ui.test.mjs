@@ -22,7 +22,7 @@ const fake = () => {
     claude_path: "", codex_path: "", keep_warm_minutes: 5,
     voice_model: "base.en", dock_edge: "top", dock_along: 0.5, opacity: 0.92, edge_glow: true,
     live_shortcut: "Ctrl+Alt+L", live_system_audio: true, auto_update: true,
-    actions_enabled: true, always_allow: ["press_keys"], commands: [],
+    actions_enabled: true, always_allow: ["press_keys"], commands: [], browser_profiles: { chrome: "projects" },
   };
   const view = (s) => ({ ...s, describe: s.when.kind === "once" ? `once, ${s.when.date} ${s.when.time}` : `at ${s.when.time}`, next: s.paused ? "" : "soon", last: "" });
   let schedules = [{ id: 1, name: "Morning brief", prompt: "Open my calendar and summarise today", paused: false, last_run: null, created: 0,
@@ -380,6 +380,10 @@ assert.ok(await page.isChecked('[name="actions_enabled"]'));
 assert.equal(await page.textContent("#allowed-list .chip"), "Pressing keys\u00d7");
 await page.click("#allowed-list .chip button");
 assert.match(await page.textContent("#allowed-list"), /Every risky step asks first/);
+// The remembered browser profile is shown and can be forgotten.
+assert.equal(await page.textContent("#profiles-list .chip"), "Chrome: projects\u00d7");
+await page.click("#profiles-list .chip button");
+assert.match(await page.textContent("#profiles-list"), /asked once per browser/);
 await page.click("#add-command");
 await page.fill(".cmd-row .cmd-name", "Build site");
 await page.keyboard.press("Enter"); // must not submit the settings
@@ -452,6 +456,7 @@ assert.equal(saved.auto_update, false);
 assert.equal(saved.keep_warm_minutes, 5);
 assert.equal(saved.actions_enabled, true);
 assert.deepEqual(saved.always_allow, []);
+assert.deepEqual(saved.browser_profiles, {});
 assert.deepEqual(saved.commands, [{ name: "Build site", command: "npm run build" }]);
 assert.equal(await page.getAttribute("#shell", "data-edge"), "bottom");
 

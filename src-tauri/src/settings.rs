@@ -51,6 +51,9 @@ pub struct Settings {
     pub always_allow: Vec<String>,
     /// Commands the user saved. The AI can run these by name, nothing else.
     pub commands: Vec<crate::actions::SavedCommand>,
+    /// The browser profile chosen once per browser ("chrome" → "projects"),
+    /// used from then on without asking again.
+    pub browser_profiles: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for Settings {
@@ -84,6 +87,7 @@ impl Default for Settings {
             actions_enabled: true,
             always_allow: Vec::new(),
             commands: Vec::new(),
+            browser_profiles: Default::default(),
         }
     }
 }
@@ -118,6 +122,7 @@ mod tests {
         assert_eq!(old.provider, "codex");
         assert!(old.actions_enabled);
         assert!(old.always_allow.is_empty() && old.commands.is_empty());
+        assert!(old.browser_profiles.is_empty());
         let mut s = Settings::default();
         s.always_allow.push("press_keys".into());
         assert!(s.always_allows("press_keys"));

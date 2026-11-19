@@ -469,8 +469,9 @@ async function openSettings() {
   f.opacity.value = s.opacity;
   showOpacity();
   for (const name of TOGGLES) f[name].checked = s[name];
-  state.draft = { allow: [...(s.always_allow || [])], commands: (s.commands || []).map((c) => ({ ...c })) };
+  state.draft = { allow: [...(s.always_allow || [])], commands: (s.commands || []).map((c) => ({ ...c })), profiles: { ...(s.browser_profiles || {}) } };
   renderAllowed();
+  renderProfiles();
   renderCommands();
   closeScheduleEditor();
   loadSchedules();
@@ -542,6 +543,23 @@ function renderAllowed() {
     chip.appendChild(x);
     box.appendChild(chip);
   });
+}
+
+function renderProfiles() {
+  const box = $("profiles-list");
+  box.innerHTML = "";
+  const entries = Object.entries(state.draft.profiles);
+  if (!entries.length) return void (box.textContent = "None yet. You are asked once per browser when it matters.");
+  for (const [browser, profile] of entries) {
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.textContent = `${browser[0].toUpperCase()}${browser.slice(1)}: ${profile}`;
+    const x = Object.assign(document.createElement("button"), { type: "button", title: "Ask again next time", textContent: "\u00d7" });
+    x.setAttribute("aria-label", `Forget the ${browser} profile`);
+    x.addEventListener("click", () => { delete state.draft.profiles[browser]; renderProfiles(); });
+    chip.appendChild(x);
+    box.appendChild(chip);
+  }
 }
 
 function renderCommands() {
@@ -724,6 +742,7 @@ el.settings.addEventListener("submit", async (e) => {
   next.opacity = Number(f.opacity.value);
   for (const name of TOGGLES) next[name] = f[name].checked;
   next.always_allow = [...state.draft.allow];
+  next.browser_profiles = { ...state.draft.profiles };
   next.commands = state.draft.commands.map((c) => ({ name: c.name.trim(), command: c.command.trim() })).filter((c) => c.name || c.command);
   if (next.dock_edge !== state.settings.dock_edge) next.dock_along = 0.5;
   const warn = (text) => {

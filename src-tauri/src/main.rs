@@ -5,6 +5,7 @@ mod actions;
 mod audio;
 mod backend;
 mod dock;
+mod files;
 mod hotkey;
 mod mcp;
 mod platform;
@@ -12,6 +13,7 @@ mod schedule;
 mod settings;
 mod stt;
 mod tasks;
+mod uia;
 mod update;
 
 use backend::{AiEvent, Ask, Engine};
@@ -50,6 +52,43 @@ const TAP_MS: u64 = 280;
 /// Pastes the latest answer into the app in front, without touching the overlay.
 const INSERT_SHORTCUT: &str = "Ctrl+Alt+Enter";
 
+/// How a screenshot the AI saw maps back to the screen, so it can click
+/// at x/y in that picture.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ShotGeom {
+    left: i32,
+    top: i32,
+    /// Size of the picture the AI got.
+    width: u32,
+    height: u32,
+    /// Screen pixels per picture pixel.
+    scale: f64,
+}
+
+impl ShotGeom {
+    fn new(origin: (i32, i32), w: u32, h: u32) -> Self {
+        let long = w.max(h).max(1);
+        let scale = if long > SHOT_MAX_EDGE {
+            long as f64 / SHOT_MAX_EDGE as f64
+        } else {
+            1.0
+        };
+        Self {
+            left: origin.0,
+            top: origin.1,
+            width: (w as f64 / scale) as u32,
+            height: (h as f64 / scale) as u32,
+            scale,
+        }
+    }
+    fn to_screen(self, x: i32, y: i32) -> (i32, i32) {
+        (
+            self.left + (x as f64 * self.scale).round() as i32,
+            self.top + (y as f64 * self.scale).round() as i32,
+        )
+    }
+}
+
 /// What was on screen when the assistant was called.
 #[derive(Default)]
 struct Snapshot {
@@ -87,6 +126,10 @@ struct App {
     /// Where typing and key presses go; 0 means "the window in front".
     target: Mutex<isize>,
     schedules: Mutex<Vec<schedule::Schedule>>,
+    /// The last list from find_on_screen, and when it was made.
+    elements: Mutex<(Vec<uia::Element>, Option<Instant>)>,
+    /// Where the last screenshot the AI saw sits on screen.
+    shot: Mutex<Option<ShotGeom>>,
     settings: Mutex<Settings>,
     engine: Engine,
     speech: stt::Transcriber,
@@ -410,7 +453,7 @@ fn glow(app: &AppHandle, on: bool) {
 fn send_question(app: &AppHandle, prompt: &str, with_screen: bool) -> Result<u64, String> {
     let state = app.state::<App>();
     let s = state.settings.lock().unwrap().clone();
-    let (title, process, shot) = {
+    let (title, process, shot, shot_window) = {
         let mut snap = state.snapshot.lock().unwrap();
         // The screenshot is sent once; follow-up questions rely on the
         // conversation already containing it.
@@ -418,10 +461,17 @@ fn send_question(app: &AppHandle, prompt: &str, with_screen: bool) -> Result<u64
             snap.foreground.title.clone(),
             snap.foreground.process.clone(),
             snap.shot.take(),
+            snap.foreground.hwnd,
         )
     };
     let jpeg = if with_screen {
-        shot.and_then(|img| platform::to_jpeg(img, SHOT_MAX_EDGE))
+        shot.and_then(|img| {
+            let geom = ShotGeom::new(platform::monitor_origin(shot_window), img.width, img.height);
+            let jpeg = platform::to_jpeg(img, SHOT_MAX_EDGE)?;
+            // The AI may click at x/y in this picture.
+            *state.shot.lock().unwrap() = Some(geom);
+            Some(jpeg)
+        })
     } else {
         None
     };
@@ -1262,6 +1312,8 @@ fn main() {
                 action_ids: AtomicU64::new(0),
                 target: Mutex::new(0),
                 schedules: Mutex::new(schedule::load(&dir)),
+                elements: Mutex::new((Vec::new(), None)),
+                shot: Mutex::new(None),
                 engine: Engine::new(dir.clone(), emit),
                 speech: stt::Transcriber::default(),
                 model_download: Mutex::new(()),

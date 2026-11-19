@@ -105,6 +105,22 @@ mod imp {
         }
     }
 
+    /// Top-left corner of the monitor that holds the given window.
+    pub fn monitor_origin(window: isize) -> (i32, i32) {
+        unsafe {
+            let monitor = MonitorFromWindow(hwnd(window), MONITOR_DEFAULTTOPRIMARY);
+            let mut info = MONITORINFO {
+                cbSize: size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            if GetMonitorInfoW(monitor, &mut info).as_bool() {
+                (info.rcMonitor.left, info.rcMonitor.top)
+            } else {
+                (0, 0)
+            }
+        }
+    }
+
     /// Screenshot of the monitor that holds the given window.
     pub fn capture_monitor(window: isize) -> Option<RawImage> {
         unsafe {
@@ -326,11 +342,19 @@ mod imp {
             .collect()
     }
 
-    /// Type text into the window in front, as if from the keyboard.
-    pub fn type_text(text: &str) {
+    /// Type text into the window in front, as if from the keyboard. With
+    /// `soft_newlines` a new line is Shift+Enter, which starts a new line
+    /// without sending in chat apps (Teams, Slack…); otherwise it is Enter.
+    pub fn type_text(text: &str, soft_newlines: bool) {
         let mut inputs = release_modifiers();
         for ch in text.chars() {
             match ch {
+                '\n' if soft_newlines => inputs.extend([
+                    key(VK_SHIFT, false),
+                    key(VK_RETURN, false),
+                    key(VK_RETURN, true),
+                    key(VK_SHIFT, true),
+                ]),
                 '\n' => inputs.extend([key(VK_RETURN, false), key(VK_RETURN, true)]),
                 '\t' => inputs.extend([key(VK_TAB, false), key(VK_TAB, true)]),
                 _ => {
@@ -427,10 +451,13 @@ mod imp {
         Vec::new()
     }
     pub fn focus_window(_window: isize) {}
-    pub fn type_text(_text: &str) {}
+    pub fn type_text(_text: &str, _soft_newlines: bool) {}
     pub fn press_keys(_keys: &crate::actions::Keys) {}
     pub fn capture_monitor(_window: isize) -> Option<RawImage> {
         None
+    }
+    pub fn monitor_origin(_window: isize) -> (i32, i32) {
+        (0, 0)
     }
     pub fn force_foreground(_window: isize) {}
     pub fn paste_into(_window: isize) {}
