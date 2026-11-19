@@ -10,6 +10,8 @@ the release workflow uses that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-11-19
+
 ### Added
 
 - The notch no longer gets in the way of the mouse. Clicks, scrolling and
@@ -212,7 +214,8 @@ the release workflow uses that section as the GitHub Release notes.
 - Weekly dependency security audit and Dependabot updates.
 
 
-[Unreleased]: https://github.com/Kedhareswer/Agent-desk/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/Kedhareswer/Agent-desk/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/Kedhareswer/Agent-desk/releases/tag/v0.1.6
 [0.1.5]: https://github.com/Kedhareswer/Agent-desk/releases/tag/v0.1.5
 [0.1.4]: https://github.com/Kedhareswer/Agent-desk/releases/tag/v0.1.4
 [0.1.3]: https://github.com/Kedhareswer/Agent-desk/releases/tag/v0.1.3
