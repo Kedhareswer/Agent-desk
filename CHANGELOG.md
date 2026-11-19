@@ -10,6 +10,29 @@ the release workflow uses that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+### Fixed
+
+- Ctrl + Alt sometimes did nothing while Ctrl + Alt + Space worked. Key
+  presses and releases were handled on separate threads, so on a busy
+  computer a release could be handled before its press and leave a
+  recording running that nothing ended. They are now handled strictly in
+  order. Windows can also silently drop a slow keyboard hook (for example
+  while speech is being transcribed on every core); the hook now runs at
+  high priority, is put back every 15 seconds, and speech leaves a core
+  free. A key release the hook never saw no longer leaves the gesture
+  stuck, and the right Alt key works too (AltGr still does not wake it).
+- A slightly slow tap with nothing said now opens the notch for typing
+  instead of saying "I didn't hear anything".
+- `scoop update agent-desk` refused to run while Agent Desk was open. The
+  tray now has **Update with Scoop**, which closes Agent Desk, lets Scoop
+  update it and opens the new version.
+
+### Changed
+
+- New README recordings of the current version, including Agent Desk
+  working on the computer (`docs/media/act.gif`), at full size and 15
+  frames a second.
+
 ## [0.1.6] - 2026-11-19
 
 ### Added
