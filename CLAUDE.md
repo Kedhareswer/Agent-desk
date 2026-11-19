@@ -352,15 +352,19 @@ edge, a soft screen-edge glow while listening.
   Transcribing, Thinking, Answering, Working on it, Needs your OK, Done,
   Working with you, or an error.
   Small grey top line for context (what it sees, the question, the last
-  thing heard). No sound meter: the label says Listening. Tools (settings,
-  close) sit at the right edge and appear on hover only. Answer actions
+  thing heard). No sound meter: the label says Listening. Tools (earlier
+  answers, settings, close) sit at the right edge and appear on hover only. Answer actions
   (Insert, Copy, New) appear only when an answer is finished.
 - **Latest answer only.** A new question replaces what is on screen (the AI
   still has the earlier turns). A live check-in keeps the last answer until
-  it has something to say.
-- **Tucks away.** 5 s after Done the notch shrinks back and hides. The mouse
-  over it holds it open (2 s after it leaves); typing, settings, a step
-  waiting for an OK, an error, a notice and live mode never tuck.
+  it has something to say. Finished answers go to the history
+  (`remember()`, `localStorage` key `agent-desk.history`, last 40), shown
+  inside the notch from the clock button or Ctrl + H, like Settings.
+- **Tucks away.** After Done the notch waits long enough to read the answer
+  (`readingMs`: 250 ms a word, 10 s to 40 s), then shrinks back and hides.
+  The mouse over it holds it open (3 s after it leaves); typing, settings,
+  the history, a step waiting for an OK, an error, a notice and live mode
+  never tuck.
 - **Cheap to draw.** No `filter`/`backdrop-filter` on anything that
   animates, no `will-change` on the morphing shape. While an answer streams
   the native window grows in 96 px steps and fits exactly when it is done,
@@ -369,10 +373,15 @@ edge, a soft screen-edge glow while listening.
   `#ffc18f`, transcribing `#ff99a8`, preparing `#ffeb85`, thinking
   `#c299ff`, answering `#82ff9e`, acting `#9fe3c4`, confirm `#ffd58a`,
   done/idle `#8ab4ff`, live `#7fe3ff`, error `#ff8f8f`.
-- **Actions** appear inside the answer as `.msg.act` rows in the order they
-  happen (text before a step stays above it). A step waiting for the user
-  shows the exact text or command and three buttons: Allow, Always allow,
-  Don't. While a step waits the notch stays open (do not auto-collapse).
+- **Actions** share one `.msg.act` line under the answer (`state.step`).
+  Each new step replaces the text in place (old slides up and out, then the
+  new one slides in; timers, not animation events, because reduced motion
+  removes animations) with "Step N" on the right. Never a list of finished
+  steps. When the answer is done the line fades and goes (`settleSteps`),
+  unless the last step failed (its reason stays) or was refused. A step
+  waiting for the user shows the exact text or command and three buttons:
+  Allow, Always allow, Don't. While a step waits the notch stays open (do
+  not auto-collapse).
 - **Background** is `rgba(0,0,0,var(--alpha))`; `--alpha` comes from the
   Transparency setting (0.3–1.0). Text `#f2f3f7`, muted `#8c8c8c`.
 - **Type:** Inter / Segoe UI Variable. Label 15 px semibold, top line
@@ -390,7 +399,10 @@ edge, a soft screen-edge glow while listening.
   `uia::focus_at`); only right/double clicks, screenshot spots and
   elements without those patterns use the real cursor, through
   `uia::at_point`, which puts it back within ~50 ms. Never glide the
-  real cursor.
+  real cursor. The glide takes 0.2–0.5 s (`pointer::path`) so the eye can
+  follow it, and the pointer stays where it last worked until the answer
+  ends (`working(false)` hides it). Scrolling aims at the window in front
+  (`tasks::scroll_point`), never wherever the user's mouse is.
 - **Docking:** top, bottom, left or right edge of any monitor. Shape and
   ears adapt per edge (`data-edge` on `#shell`). Dragging snaps to the
   nearest edge (`dock::snap`). The native window is sized by `main.js`

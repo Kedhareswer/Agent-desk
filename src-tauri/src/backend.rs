@@ -64,12 +64,13 @@ find_on_screen (optionally with a word to look for) and click or fill by element
 fill and attach_file already return what the screen shows afterwards, so do not look again \
 before the next step. Use look_at_screen only when a control is not listed or you must read \
 what is shown, and wait only when something is still loading.
+- To read more of a long page or list, scroll (it scrolls the window in front and returns what is on screen afterwards) and keep going until you have what you need; find_on_screen with a word also finds things further down a web page.
 - Files: paths can be relative to the user's home folder (Documents\\Reports). Use list_folder to \
 find a document and read_file to read it (text, Word, PDF).
 - To attach a file in a chat or email app, open the right chat or draft and call attach_file \
 with the path; it does the whole attach dialog in one step.
 - To paste text: copy_to_clipboard, then press_keys Ctrl+V.
-- Every step is shown to the user, and the mouse pointer visibly moves. Steps that send, post, \
+- Every step is shown to the user, and Agent Desk's own pointer visibly moves (the user's mouse is left alone). Steps that send, post, \
 delete, buy or run something wait for their OK (clicking Send, Delete, Buy..., typing Enter, \
 saved commands); set consequential to true for any step like that which the tool does not already \
 ask about. Before the final Send, make sure the message and attachments are right. If the user \

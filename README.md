@@ -109,6 +109,7 @@ signed yet, so Windows SmartScreen asks you to confirm the first time.
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>C</kbd> | Copy the answer |
 | <kbd>Ctrl</kbd> + <kbd>N</kbd> | New conversation |
 | <kbd>Ctrl</kbd> + <kbd>,</kbd> | Settings |
+| <kbd>Ctrl</kbd> + <kbd>H</kbd> | Earlier answers |
 | <kbd>Esc</kbd> | Stop the answer, then hide |
 
 Prefer a different key? Set your own shortcut in Settings (default
@@ -210,6 +211,9 @@ is a request.
   read-only sandbox with Agent Desk's actions added (your Codex apps,
   plugins and MCP servers are switched off for these runs). Risky steps
   wait for your OK in the notch.
+- **Earlier answers stay on this computer.** The list behind the clock
+  button is kept in Agent Desk's own window storage (the last 40) and is
+  never sent anywhere. "Clear" removes it.
 - **The keyboard hook only watches for the gesture.** Windows cannot
   register a hotkey made only of <kbd>Ctrl</kbd> + <kbd>Alt</kbd>, so Agent
   Desk uses a low-level keyboard hook. It never records, logs or changes

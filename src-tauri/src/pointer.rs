@@ -51,12 +51,15 @@ pub fn glide(app: &AppHandle, x: i32, y: i32) {
     }
 }
 
-/// Hide the pointer once nothing has happened for a moment.
+/// The pointer stays where it last worked for as long as Agent Desk is
+/// working (it is hidden when the answer ends, see `crate::working`), so
+/// the user can see who is busy. This only hides it if a step leaves it
+/// standing much longer than that.
 pub fn hide_soon(app: &AppHandle) {
     let generation = GENERATION.load(Ordering::SeqCst);
     let app = app.clone();
     std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(2500));
+        std::thread::sleep(Duration::from_secs(20));
         if GENERATION.load(Ordering::SeqCst) == generation {
             hide(&app);
         }
@@ -71,14 +74,16 @@ pub fn hide(app: &AppHandle) {
     }
 }
 
-/// Positions for an eased glide: quick start, gentle stop, 8 to 24 steps.
+/// Positions for an eased glide: quick start, gentle stop. 18 to 40 steps
+/// of 12 ms, so it takes about a fifth to half a second: slow enough to
+/// follow with the eye, quick enough not to hold the task up.
 pub fn path(from: (i32, i32), to: (i32, i32)) -> Vec<(i32, i32)> {
     let (dx, dy) = ((to.0 - from.0) as f64, (to.1 - from.1) as f64);
     let distance = (dx * dx + dy * dy).sqrt();
     if distance < 1.0 {
         return vec![to];
     }
-    let steps = (distance / 40.0).clamp(8.0, 24.0) as i32;
+    let steps = (distance / 25.0).clamp(18.0, 40.0) as i32;
     (1..=steps)
         .map(|s| {
             let t = s as f64 / steps as f64;
@@ -99,7 +104,7 @@ mod tests {
     fn the_glide_ends_on_the_target_and_eases_out() {
         let p = path((0, 0), (800, 0));
         assert_eq!(*p.last().unwrap(), (800, 0));
-        assert!(p.len() >= 8 && p.len() <= 24);
+        assert!(p.len() >= 18 && p.len() <= 40);
         // Bigger steps first, smaller at the end.
         assert!(p[0].0 > p[p.len() - 1].0 - p[p.len() - 2].0);
         assert!(p.windows(2).all(|w| w[1].0 >= w[0].0));

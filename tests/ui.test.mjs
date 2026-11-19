@@ -208,6 +208,9 @@ assert.equal(await page.textContent("#top-line"), "Downloading speech model 34%"
 
 /* ----- a finished answer tucks itself away ----- */
 
+// It stays long enough to read: at least 10 s, longer for long answers.
+assert.deepEqual(await page.evaluate(() => [readingMs("It's 9:14 PM."), readingMs("word ".repeat(80)), readingMs("word ".repeat(400))]), [10000, 20000, 40000]);
+
 await page.evaluate(() => Object.assign(window, { __tuckMs: 300, __tuckAfterHoverMs: 200 }));
 {
   const t = await page.evaluate(() => window.__fake.nextTurn());
@@ -307,23 +310,46 @@ await page.keyboard.press("Control+n");
 await wake(false);
 let actTurn = await page.evaluate(() => window.__fake.nextTurn());
 await emit("asked", { turn: actTurn, text: "open Chrome and open GitHub" });
-const step = (id, status) => emit("action", { id, turn: actTurn, kind: "open_url", summary: "Open github.com in Chrome", detail: "https://github.com", status, result: "" });
+const step = (id, status, summary = "Open github.com in Chrome") => emit("action", { id, turn: actTurn, kind: "open_url", summary, detail: "https://github.com", status, result: "" });
 await step(1, "running");
 assert.equal(await notch("state"), "acting");
 assert.equal(await page.textContent("#label"), "Working on it");
 assert.equal(await page.textContent(".msg.act .act-text"), "Open github.com in Chrome");
 assert.ok(await page.isVisible(".msg.act"), "the step shows in the notch before it runs");
 assert.equal(await page.locator(".act-buttons").count(), 0, "a harmless step does not ask");
+await snap("10-step");
 await step(1, "done");
-assert.equal(await page.textContent(".msg.act .act-status"), "Done");
-await emit("ai", { turn: actTurn, kind: "delta", text: "\n\nOpened GitHub in Chrome." });
+// The next steps take the same line instead of adding rows.
+await step(2, "running", "Find “Contributors” on the page");
+await page.waitForFunction(() => document.querySelector(".msg.act .act-text").textContent === "Find “Contributors” on the page");
+await step(2, "done", "Find “Contributors” on the page");
+await step(3, "running", "Scroll down");
+await page.waitForFunction(() => document.querySelector(".msg.act .act-text").textContent === "Scroll down");
+assert.equal(await page.locator(".msg.act").count(), 1, "one line for all the steps");
+assert.equal(await page.textContent(".msg.act .act-status"), "Step 3");
+await page.waitForTimeout(300); // the new step has slid in
+{
+  // One line high, whatever the step.
+  const h = await page.locator(".msg.act").boundingBox();
+  assert.ok(h.height <= 40, `the step line stays one line (${h.height}px)`);
+  const off = await page.evaluate(() => {
+    const mid = (n) => { const r = n.getBoundingClientRect(); return r.top + r.height / 2; };
+    const line = document.querySelector(".msg.act");
+    return [".act-dot", ".act-text", ".act-status"].map((q) => Math.abs(mid(line.querySelector(q)) - mid(line)));
+  });
+  assert.ok(off.every((d) => d <= 1), `dot, step and count share a centre line (${off})`);
+}
+await snap("10b-step-3");
+await step(3, "done", "Scroll down");
+await emit("ai", { turn: actTurn, kind: "delta", text: "You're the top contributor on 3 of your repos." });
 await emit("ai", { turn: actTurn, kind: "done", text: "" });
 assert.equal(await notch("state"), "done");
+await page.waitForFunction(() => !document.querySelector(".msg.act"), null, { timeout: 2000 });
 const order = () => page.evaluate(() => [...document.querySelectorAll("#thread > .msg:not(.user)")].map((n) => n.className));
-assert.deepEqual(await order(), ["msg act", "msg ai"], "the step comes before the answer");
-await page.waitForFunction(() => document.querySelector(".msg.ai").textContent === "Opened GitHub in Chrome.");
+assert.deepEqual(await order(), ["msg ai"], "the step line goes once the answer is done");
+await page.waitForFunction(() => document.querySelector(".msg.ai").textContent === "You're the top contributor on 3 of your repos.");
 assert.deepEqual(await calls("answer_action"), []);
-await snap("10-acted");
+await snap("10c-acted");
 
 // A step that sends something waits for a one-tap OK and shows exactly what will happen.
 actTurn = await page.evaluate(() => window.__fake.nextTurn());
@@ -336,9 +362,9 @@ assert.equal(await page.textContent("#label"), "Needs your OK");
 assert.equal(await page.textContent(".msg.act[data-status=ask] .act-detail"), "Running late, sorry\n");
 assert.deepEqual(await page.locator(".act-buttons button").allTextContents(), ["Allow", "Always allow", "Don't"]);
 // Text written before the step stays above it.
-assert.deepEqual((await order()).slice(-3), ["msg ai", "msg act", "msg ai"]);
-assert.equal(await page.textContent(".msg.act[data-id='2'] + .msg.ai, .msg.ai:has(+ .msg.act[data-id='2'])"), "I'll type it into the chat.");
-assert.ok(await page.isVisible(".msg.ai:has(+ .msg.act[data-id='2'])"), "text written before the step is shown");
+assert.deepEqual(await order(), ["msg ai", "msg act"]);
+await page.waitForFunction(() => document.querySelector(".msg.ai").textContent === "I'll type it into the chat.");
+assert.ok(await page.isVisible(".msg.ai"), "text written before the step is shown");
 assert.equal(await page.textContent("#top-line"), "tell Sam I'm running late", "the question stays on top");
 await snap("11-confirm");
 await page.click(".act-buttons button[data-decision=allow]");
@@ -346,7 +372,7 @@ assert.deepEqual((await calls("answer_action")).at(-1), { id: 2, decision: "allo
 assert.equal(await page.locator(".act-buttons").count(), 0, "answered once");
 await emit("action", { ...send, status: "running" });
 await emit("action", { ...send, status: "done" });
-assert.equal(await page.textContent(".msg.act[data-id='2'] .act-status"), "Done");
+assert.equal(await page.getAttribute(".msg.act", "data-status"), "done");
 
 // Escape refuses a waiting step (without stopping the answer); Enter allows.
 const stopsBefore = (await calls("stop")).length;
@@ -355,7 +381,7 @@ await page.keyboard.press("Escape");
 assert.deepEqual((await calls("answer_action")).at(-1), { id: 3, decision: "deny" });
 assert.equal((await calls("stop")).length, stopsBefore, "Escape on a question does not stop the answer");
 await emit("action", { ...send, id: 3, status: "denied" });
-assert.equal(await page.textContent(".msg.act[data-id='3'] .act-status"), "Not done");
+assert.equal(await page.getAttribute(".msg.act[data-id='3']", "data-status"), "denied");
 await emit("action", { ...send, id: 4, kind: "run_command", summary: "Run “Build site”", detail: "npm run build", status: "ask" });
 await page.keyboard.press("Enter");
 assert.deepEqual((await calls("answer_action")).at(-1), { id: 4, decision: "allow" });
@@ -363,9 +389,10 @@ assert.deepEqual((await calls("answer_action")).at(-1), { id: 4, decision: "allo
 await emit("action", { ...send, id: 5, status: "ask" });
 await page.click(".act-buttons button[data-decision=always]");
 assert.deepEqual((await calls("answer_action")).at(-1), { id: 5, decision: "always" });
-// A failed step says why.
+// A failed step says why, on the same line.
 await emit("action", { ...send, id: 6, kind: "open_app", summary: "Open Photoshop", detail: "", status: "failed", result: "There is no app called \"Photoshop\" in the Start menu." });
-assert.match(await page.textContent(".msg.act[data-id='6'] .act-status"), /no app called/);
+assert.match(await page.textContent(".msg.act[data-id='6'] .act-error"), /no app called/);
+assert.equal(await page.locator(".msg.act").count(), 1);
 // Stop takes away a pending question.
 await emit("action", { ...send, id: 7, status: "ask" });
 await page.click("#stop");
@@ -373,6 +400,42 @@ assert.equal(await page.locator(".act-buttons").count(), 0);
 // Steps from an old turn are ignored.
 await emit("action", { ...send, id: 8, turn: 1, status: "ask" });
 assert.equal(await page.locator(".msg.act[data-id='8']").count(), 0);
+
+/* ----- earlier answers ----- */
+
+// Finished answers are kept and can be read again from the notch.
+await wake(false);
+await page.hover("#head");
+await page.click("#open-history");
+assert.ok(await page.isVisible("#history"));
+assert.ok(await page.isHidden("#thread"), "the history takes the panel's place");
+const hist = await page.locator(".hist").allTextContents();
+assert.ok(hist.length >= 2, `earlier answers are listed (${hist.length})`);
+assert.match(hist[0], /open Chrome and open GitHub/);
+assert.match(hist[0], /top contributor on 3/);
+assert.match(hist[0], /3 steps on your computer/);
+assert.equal(await page.locator(".hist .msg.ai script, .hist .msg.ai img").count(), 0);
+{
+  const edges = await page.evaluate(() => {
+    // The visible text, not the box around it (buttons have padding).
+    const right = (q) => { const r = document.createRange(); r.selectNodeContents(document.querySelector(q)); return r.getBoundingClientRect().right; };
+    const left = (q) => document.querySelector(q).getBoundingClientRect().left;
+    return { clear: right("#history-clear"), time: right(".hist time"), list: right("#history-list"), head: left(".history-head h3"), q: left(".hist-q span") };
+  });
+  assert.ok(Math.abs(edges.clear - edges.time) <= 2, `Clear lines up with the times (${edges.clear} vs ${edges.time})`);
+  assert.ok(Math.abs(edges.head - edges.q) <= 2, "the heading lines up with the questions");
+  const clipped = await page.evaluate(() => [...document.querySelectorAll(".hist .msg.ai")].filter((n) => n.scrollWidth > n.clientWidth + 1).length);
+  assert.equal(clipped, 0, "no answer is cut off sideways");
+}
+await snap("12-history");
+await page.keyboard.press("Escape");
+assert.ok(await page.isHidden("#history"), "Escape closes it");
+await page.keyboard.press("Control+h");
+assert.ok(await page.isVisible("#history"), "Ctrl+H opens it");
+await page.click("#history-clear");
+assert.equal(await page.locator(".hist").count(), 0);
+assert.ok(await page.isVisible("#history-empty"));
+await page.keyboard.press("Escape");
 
 // A scheduled task starts a conversation of its own.
 const schedTurn = await page.evaluate(() => window.__fake.nextTurn());

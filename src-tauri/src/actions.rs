@@ -267,7 +267,7 @@ pub fn tool_definitions() -> Value {
                 "text": { "type": "string" }
             }), &["text"]),
         tool("scroll",
-            "Scroll the window under the mouse pointer.",
+            "Scroll the window in front (at the spot Agent Desk last pointed at, or its middle). Returns what is on screen afterwards.",
             json!({
                 "direction": { "type": "string", "enum": ["down", "up", "left", "right"] },
                 "amount": { "type": "integer", "description": "Lines, 1 to 30 (default 5)" }

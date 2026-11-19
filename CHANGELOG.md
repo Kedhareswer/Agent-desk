@@ -10,6 +10,31 @@ the release workflow uses that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+### Added
+
+- Earlier answers. The clock button in the notch (or Ctrl + H) lists the
+  answers you got before, newest first, so a question replaced by a new one
+  or an answer that tucked away can be read again. They are kept on this
+  computer only; "Clear" removes them.
+
+### Changed
+
+- Steps on your computer now share one line that changes in place ("Open
+  github.com in Chrome", then "Scroll down", ...) instead of a growing list
+  of finished steps. The line goes once the answer is done, unless a step
+  failed or you said no.
+- A finished answer stays on screen for at least 10 seconds, longer for
+  long answers (up to 40 s), before the notch tucks away. Moving the mouse
+  over it still keeps it open.
+- Agent Desk's pointer now glides visibly to where it works and stays on
+  screen while Agent Desk is busy, instead of disappearing after each click.
+
+### Fixed
+
+- Scrolling did nothing unless Agent Desk had clicked first: it scrolled
+  wherever your own mouse happened to be. It now scrolls the window in
+  front (its pointer shows where) and tells the AI what came into view.
+
 ## [0.1.4] - 2026-11-19
 
 ### Added
