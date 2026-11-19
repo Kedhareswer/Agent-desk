@@ -1,13 +1,20 @@
 // Agent Desk: a small always-available AI overlay for the desktop.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod actions;
 mod audio;
 mod backend;
 mod dock;
+mod files;
 mod hotkey;
+mod mcp;
 mod platform;
+mod schedule;
 mod settings;
+mod setup;
 mod stt;
+mod tasks;
+mod uia;
 mod update;
 
 use backend::{AiEvent, Ask, Engine};
@@ -16,6 +23,7 @@ use hotkey::Gesture;
 use serde::Serialize;
 use settings::Settings;
 use std::{
+    collections::HashMap,
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
@@ -38,12 +46,49 @@ const NOTCH_HEIGHT: f64 = 58.0;
 const MAX_WIDTH: f64 = 640.0;
 const MAX_HEIGHT: f64 = 640.0;
 /// Long edge of the screenshot sent to the model.
-const SHOT_MAX_EDGE: u32 = 1568;
+pub(crate) const SHOT_MAX_EDGE: u32 = 1568;
 /// Holding the wake keys for less than this is a tap (open to type);
 /// longer is speech.
 const TAP_MS: u64 = 280;
 /// Pastes the latest answer into the app in front, without touching the overlay.
 const INSERT_SHORTCUT: &str = "Ctrl+Alt+Enter";
+
+/// How a screenshot the AI saw maps back to the screen, so it can click
+/// at x/y in that picture.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ShotGeom {
+    left: i32,
+    top: i32,
+    /// Size of the picture the AI got.
+    width: u32,
+    height: u32,
+    /// Screen pixels per picture pixel.
+    scale: f64,
+}
+
+impl ShotGeom {
+    fn new(origin: (i32, i32), w: u32, h: u32) -> Self {
+        let long = w.max(h).max(1);
+        let scale = if long > SHOT_MAX_EDGE {
+            long as f64 / SHOT_MAX_EDGE as f64
+        } else {
+            1.0
+        };
+        Self {
+            left: origin.0,
+            top: origin.1,
+            width: (w as f64 / scale) as u32,
+            height: (h as f64 / scale) as u32,
+            scale,
+        }
+    }
+    fn to_screen(self, x: i32, y: i32) -> (i32, i32) {
+        (
+            self.left + (x as f64 * self.scale).round() as i32,
+            self.top + (y as f64 * self.scale).round() as i32,
+        )
+    }
+}
 
 /// What was on screen when the assistant was called.
 #[derive(Default)]
@@ -76,6 +121,21 @@ struct Screen {
 
 struct App {
     dir: PathBuf,
+    /// Actions waiting for the user's OK, by action id.
+    pending: Mutex<HashMap<u64, std::sync::mpsc::Sender<tasks::Decision>>>,
+    action_ids: AtomicU64,
+    /// The user's files or clipboard were read in this conversation, so
+    /// links ask first (they could carry the data off).
+    private_data: AtomicBool,
+    /// The turn a schedule started; every step in it asks first.
+    scheduled_turn: AtomicU64,
+    /// Where typing and key presses go; 0 means "the window in front".
+    target: Mutex<isize>,
+    schedules: Mutex<Vec<schedule::Schedule>>,
+    /// The last list from find_on_screen, and when it was made.
+    elements: Mutex<(Vec<uia::Element>, Option<Instant>)>,
+    /// Where the last screenshot the AI saw sits on screen.
+    shot: Mutex<Option<ShotGeom>>,
     settings: Mutex<Settings>,
     engine: Engine,
     speech: stt::Transcriber,
@@ -88,6 +148,8 @@ struct App {
     show_download: AtomicBool,
     /// Last download percentage, so a waiter can show it straight away.
     download_pct: AtomicU8,
+    /// The speech model the setup screen asked to download, while it runs.
+    downloading: Mutex<Option<String>>,
     snapshot: Mutex<Snapshot>,
     talk: Mutex<Option<Talk>>,
     talk_ids: AtomicU64,
@@ -129,6 +191,8 @@ struct Asked {
     text: String,
     /// A live-mode check-in: show the answer only if there is one.
     quiet: bool,
+    /// A scheduled task: it starts a fresh conversation.
+    scheduled: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -257,10 +321,37 @@ fn finish_drag(app: &AppHandle) {
 
 /* ---------- showing and hiding ---------- */
 
+/// Ask WebView2 to give back memory while a window is hidden, and to use
+/// its normal amount again when it is shown. The notch is idle most of the
+/// time, so this keeps the tray app light.
+fn webview_memory(_win: &WebviewWindow, _low: bool) {
+    #[cfg(windows)]
+    {
+        let low = _low;
+        let _ = _win.with_webview(move |view| unsafe {
+            use webview2_com::Microsoft::Web::WebView2::Win32::{
+                ICoreWebView2_19, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW,
+                COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
+            };
+            use windows::core::Interface;
+            if let Ok(core) = view.controller().CoreWebView2() {
+                if let Ok(v19) = core.cast::<ICoreWebView2_19>() {
+                    let _ = v19.SetMemoryUsageTargetLevel(if low {
+                        COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW
+                    } else {
+                        COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL
+                    });
+                }
+            }
+        });
+    }
+}
+
 fn hide_overlay(app: &AppHandle) {
     live_stop(app);
     if let Some(win) = overlay(app) {
         let _ = win.hide();
+        webview_memory(&win, true);
     }
     if let Ok(sc) = INSERT_SHORTCUT.parse::<Shortcut>() {
         let _ = app.global_shortcut().unregister(sc);
@@ -313,6 +404,7 @@ fn show_overlay(app: &AppHandle, typing: bool, info: Option<WakeInfo>) {
     }
     place_overlay(app);
     *state.shown_at.lock().unwrap() = Instant::now();
+    webview_memory(&win, false);
     let _ = win.show();
     if typing {
         let _ = win.set_focus();
@@ -340,9 +432,13 @@ fn show_overlay(app: &AppHandle, typing: bool, info: Option<WakeInfo>) {
         let state = app2.state::<App>();
         let live = is_live(&app2);
         let s = state.settings.lock().unwrap().clone();
-        state
-            .engine
-            .prewarm(&s.provider, &s.claude_model, &s.claude_path, live);
+        state.engine.prewarm(
+            &s.provider,
+            &s.claude_model,
+            &s.claude_path,
+            live,
+            s.actions_enabled,
+        );
     });
 }
 
@@ -377,6 +473,7 @@ fn glow(app: &AppHandle, on: bool) {
             ));
         }
         let _ = win.set_ignore_cursor_events(true);
+        webview_memory(&win, false);
         let _ = win.show();
         let _ = app.emit_to("glow", "glow", true);
     } else if win.is_visible().unwrap_or(false) {
@@ -384,6 +481,7 @@ fn glow(app: &AppHandle, on: bool) {
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(450));
             let _ = win.hide();
+            webview_memory(&win, true);
         });
     }
 }
@@ -393,7 +491,7 @@ fn glow(app: &AppHandle, on: bool) {
 fn send_question(app: &AppHandle, prompt: &str, with_screen: bool) -> Result<u64, String> {
     let state = app.state::<App>();
     let s = state.settings.lock().unwrap().clone();
-    let (title, process, shot) = {
+    let (title, process, shot, shot_window) = {
         let mut snap = state.snapshot.lock().unwrap();
         // The screenshot is sent once; follow-up questions rely on the
         // conversation already containing it.
@@ -401,17 +499,35 @@ fn send_question(app: &AppHandle, prompt: &str, with_screen: bool) -> Result<u64
             snap.foreground.title.clone(),
             snap.foreground.process.clone(),
             snap.shot.take(),
+            snap.foreground.hwnd,
         )
     };
     let jpeg = if with_screen {
-        shot.and_then(|img| platform::to_jpeg(img, SHOT_MAX_EDGE))
+        shot.and_then(|img| {
+            let geom = ShotGeom::new(platform::monitor_origin(shot_window), img.width, img.height);
+            let jpeg = platform::to_jpeg(img, SHOT_MAX_EDGE)?;
+            // The AI may click at x/y in this picture.
+            *state.shot.lock().unwrap() = Some(geom);
+            Some(jpeg)
+        })
     } else {
         None
     };
 
+    let live = is_live(app);
+    let tools = s.actions_enabled && !live;
+    // A new request may act on the window the user came from.
+    *state.target.lock().unwrap() = 0;
     let mut text = String::new();
     if !title.is_empty() || !process.is_empty() {
         text.push_str(&format!("[Active window: {title} ({process})]\n"));
+    }
+    if tools {
+        // Needed to schedule "at 5" or "tomorrow" correctly.
+        text.push_str(&format!(
+            "[Local time: {}]\n",
+            schedule::format_stamp(platform::local_stamp())
+        ));
     }
     if jpeg.is_some() {
         text.push_str("[A screenshot of my screen is attached.]\n");
@@ -431,7 +547,8 @@ fn send_question(app: &AppHandle, prompt: &str, with_screen: bool) -> Result<u64
         claude_path: s.claude_path,
         codex_model: s.codex_model,
         codex_path: s.codex_path,
-        live: is_live(app),
+        live,
+        tools,
     })
 }
 
@@ -555,6 +672,7 @@ fn talk_end(app: &AppHandle, held_ms: u64) {
                 turn,
                 text,
                 quiet: false,
+                scheduled: false,
             },
         );
         Ok(turn)
@@ -713,6 +831,7 @@ fn live_start(app: &AppHandle) {
                             turn,
                             text: shown,
                             quiet: true,
+                            scheduled: false,
                         },
                     );
                 }
@@ -758,6 +877,7 @@ fn send_live(app: &AppHandle, lines: &[String], with_shot: bool) -> Result<u64, 
         codex_model: s.codex_model,
         codex_path: s.codex_path,
         live: true,
+        tools: false,
     })
 }
 
@@ -808,6 +928,9 @@ fn apply_settings(app: &AppHandle, s: &Settings) -> Option<String> {
         }
     }
     hotkey::set_mode(hotkey::Mode::parse(&s.wake_mode));
+    app.state::<App>()
+        .engine
+        .set_accounts(&s.claude_config_dir, &s.codex_home);
 
     let auto = app.autolaunch();
     if auto.is_enabled().unwrap_or(false) != s.autostart {
@@ -885,6 +1008,114 @@ fn status(state: State<App>) -> Status {
     }
 }
 
+#[derive(Serialize)]
+struct SetupInfo {
+    provider: String,
+    claude: setup::CliInfo,
+    codex: setup::CliInfo,
+    speech: Vec<setup::SpeechModel>,
+    /// The speech model being downloaded right now, if any.
+    downloading: Option<String>,
+    download_pct: u8,
+    hook_supported: bool,
+}
+
+/// Everything the setup screen shows. Both CLIs are checked at once.
+#[tauri::command(async)]
+fn setup_info(state: State<App>) -> SetupInfo {
+    let s = state.settings.lock().unwrap().clone();
+    let (cp, cd) = (s.claude_path.clone(), s.claude_config_dir.clone());
+    let claude = std::thread::spawn(move || setup::cli_info("claude", &cp, &cd));
+    let codex = setup::cli_info("codex", &s.codex_path, &s.codex_home);
+    SetupInfo {
+        provider: s.provider.clone(),
+        claude: claude.join().unwrap_or_default(),
+        codex,
+        speech: setup::speech_models(&state.dir),
+        downloading: state.downloading.lock().unwrap().clone(),
+        download_pct: state.download_pct.load(Ordering::SeqCst),
+        hook_supported: cfg!(windows),
+    }
+}
+
+/// The models a provider's CLI offers, for the model list.
+#[tauri::command(async)]
+fn list_models(state: State<App>, provider: String) -> Vec<setup::ModelChoice> {
+    let s = state.settings.lock().unwrap().clone();
+    if provider == "codex" {
+        setup::codex_models(&s.codex_path, &s.codex_home)
+    } else {
+        setup::claude_models(&s.claude_model, &state.engine.resolved_model())
+    }
+}
+
+#[derive(Serialize, Clone)]
+struct SpeechProgress {
+    model: String,
+    pct: u8,
+    done: bool,
+    error: String,
+}
+
+/// Download a speech model in the background, reporting progress.
+#[tauri::command]
+fn download_speech(app: AppHandle, model: String) -> Result<(), String> {
+    if !stt::MODELS.iter().any(|m| m.0 == model) {
+        return Err("Unknown speech model.".into());
+    }
+    let state = app.state::<App>();
+    if state.downloading.lock().unwrap().is_some() {
+        return Err("A speech model is already downloading.".into());
+    }
+    *state.downloading.lock().unwrap() = Some(model.clone());
+    std::thread::spawn(move || {
+        let state = app.state::<App>();
+        let report = |pct: u8, done: bool, error: String| {
+            let _ = app.emit_to(
+                "main",
+                "speech-progress",
+                SpeechProgress {
+                    model: model.clone(),
+                    pct,
+                    done,
+                    error,
+                },
+            );
+        };
+        let result = (|| {
+            let _one_at_a_time = state
+                .model_download
+                .lock()
+                .map_err(|_| "download lock poisoned".to_string())?;
+            let progress_app = app.clone();
+            let m = model.clone();
+            stt::ensure_model(&state.dir, &model, &move |pct| {
+                progress_app
+                    .state::<App>()
+                    .download_pct
+                    .store(pct, Ordering::SeqCst);
+                let _ = progress_app.emit_to(
+                    "main",
+                    "speech-progress",
+                    SpeechProgress {
+                        model: m.clone(),
+                        pct,
+                        done: false,
+                        error: String::new(),
+                    },
+                );
+            })
+            .map(|_| ())
+        })();
+        *state.downloading.lock().unwrap() = None;
+        match result {
+            Ok(()) => report(100, true, String::new()),
+            Err(e) => report(0, true, e),
+        }
+    });
+    Ok(())
+}
+
 #[tauri::command(async)]
 fn ask(app: AppHandle, prompt: String, with_screen: bool) -> Result<u64, String> {
     send_question(&app, &prompt, with_screen)
@@ -892,17 +1123,24 @@ fn ask(app: AppHandle, prompt: String, with_screen: bool) -> Result<u64, String>
 
 #[tauri::command(async)]
 fn stop(state: State<App>) {
+    tasks::deny_all(&state);
     state.engine.stop();
 }
 
 #[tauri::command(async)]
 fn new_chat(app: AppHandle, state: State<App>) {
     let live = is_live(&app);
+    tasks::deny_all(&state);
+    tasks::forget_conversation(&state);
     state.engine.new_chat();
     let s = state.settings.lock().unwrap().clone();
-    state
-        .engine
-        .prewarm(&s.provider, &s.claude_model, &s.claude_path, live);
+    state.engine.prewarm(
+        &s.provider,
+        &s.claude_model,
+        &s.claude_path,
+        live,
+        s.actions_enabled,
+    );
 }
 
 #[tauri::command]
@@ -1025,6 +1263,7 @@ fn watch_for_updates(app: AppHandle) {
 fn build_tray(app: &AppHandle, hide_from_capture: bool) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open Agent Desk", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
+    let setup_item = MenuItem::with_id(app, "setup", "Setup and guide…", true, None::<&str>)?;
     let live = CheckMenuItem::with_id(
         app,
         "live",
@@ -1049,6 +1288,7 @@ fn build_tray(app: &AppHandle, hide_from_capture: bool) -> tauri::Result<()> {
             &open,
             &live,
             &settings,
+            &setup_item,
             &capture,
             &PredefinedMenuItem::separator(app)?,
             &update_item,
@@ -1077,6 +1317,10 @@ fn build_tray(app: &AppHandle, hide_from_capture: bool) -> tauri::Result<()> {
                 open_typing(app);
                 let _ = app.emit_to("main", "open-settings", ());
             }
+            "setup" => {
+                open_typing(app);
+                let _ = app.emit_to("main", "open-setup", ());
+            }
             "capture" => {
                 let state = app.state::<App>();
                 let updated = {
@@ -1100,7 +1344,9 @@ fn build_tray(app: &AppHandle, hide_from_capture: bool) -> tauri::Result<()> {
                 std::thread::spawn(move || update_clicked(&app));
             }
             "quit" => {
+                tasks::deny_all(&app.state::<App>());
                 app.state::<App>().engine.stop();
+                app.state::<App>().engine.forget_tool_config();
                 app.exit(0);
             }
             _ => {}
@@ -1201,7 +1447,15 @@ fn main() {
             resize,
             focus,
             copy_text,
-            insert_text
+            insert_text,
+            setup_info,
+            list_models,
+            download_speech,
+            tasks::answer_action,
+            tasks::list_schedules,
+            tasks::save_schedule,
+            tasks::delete_schedule,
+            tasks::run_schedule_now
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -1214,11 +1468,20 @@ fn main() {
                 let _ = emitter.emit_to("main", "ai", event);
             });
             app.manage(App {
+                pending: Mutex::new(HashMap::new()),
+                action_ids: AtomicU64::new(0),
+                private_data: AtomicBool::new(false),
+                scheduled_turn: AtomicU64::new(0),
+                target: Mutex::new(0),
+                schedules: Mutex::new(schedule::load(&dir)),
+                elements: Mutex::new((Vec::new(), None)),
+                shot: Mutex::new(None),
                 engine: Engine::new(dir.clone(), emit),
                 speech: stt::Transcriber::default(),
                 model_download: Mutex::new(()),
                 show_download: AtomicBool::new(false),
                 download_pct: AtomicU8::new(0),
+                downloading: Mutex::new(None),
                 dir: dir.clone(),
                 settings: Mutex::new(settings.clone()),
                 snapshot: Mutex::new(Snapshot::default()),
@@ -1239,6 +1502,8 @@ fn main() {
 
             build_tray(&handle, settings.hide_from_capture)?;
             watch_for_updates(handle.clone());
+            tasks::start_server(&handle);
+            tasks::watch_schedules(handle.clone());
 
             // Gestures arrive on the keyboard hook thread, which must return
             // at once, so the work moves to its own thread.
@@ -1265,7 +1530,10 @@ fn main() {
                         let state = events_app.state::<App>();
                         let just_shown =
                             state.shown_at.lock().unwrap().elapsed() < Duration::from_millis(400);
-                        if state.settings.lock().unwrap().hide_on_blur && !just_shown {
+                        // Acting moves focus to other apps; that is not the
+                        // user clicking away.
+                        let working = state.engine.is_busy();
+                        if state.settings.lock().unwrap().hide_on_blur && !just_shown && !working {
                             hide_overlay(&events_app);
                         }
                     }
@@ -1306,10 +1574,18 @@ fn main() {
             });
 
             // First launch: show the overlay once so the user knows it is running.
+            // Until setup has been finished once, open on the setup screen.
             if first_run {
                 let _ = settings.save(&dir);
+            }
+            if !settings.setup_done {
                 let info = capture_context(&handle);
                 show_overlay(&handle, true, info);
+                let _ = handle.emit_to("main", "open-setup", ());
+            }
+            // The glow window starts hidden: keep its memory low until used.
+            if let Some(glow) = handle.get_webview_window("glow") {
+                webview_memory(&glow, true);
             }
             Ok(())
         })

@@ -289,6 +289,22 @@ pub fn to_16k_mono(samples: &[f32], channels: usize, rate: u32) -> Vec<f32> {
 
 /// Whether a 16 kHz recording contains anything louder than room noise.
 /// Whisper invents words for pure silence, so silent clips are not sent to it.
+/// Cut the silence before the first sound and after the last, keeping a
+/// quarter of a second on each side so no word is clipped.
+pub fn trim_silence(samples: &[f32]) -> &[f32] {
+    const WINDOW: usize = 480; // 30 ms
+    const KEEP: usize = 16_000 / 4;
+    let loud = |w: &[f32]| (w.iter().map(|s| s * s).sum::<f32>() / w.len() as f32).sqrt() > 0.012;
+    let first = samples.chunks(WINDOW).position(loud);
+    let last = samples.chunks(WINDOW).rposition(loud);
+    let (Some(first), Some(last)) = (first, last) else {
+        return samples;
+    };
+    let start = (first * WINDOW).saturating_sub(KEEP);
+    let end = ((last + 1) * WINDOW + KEEP).min(samples.len());
+    &samples[start..end]
+}
+
 pub fn has_speech(samples: &[f32]) -> bool {
     const WINDOW: usize = 480; // 30 ms
     let loud = samples
@@ -301,6 +317,20 @@ pub fn has_speech(samples: &[f32]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn silence_around_speech_is_trimmed() {
+        // About 2 s silence, 1 s sound, 3 s silence (in whole 30 ms windows).
+        let mut clip = vec![0.0f32; 70 * 480];
+        clip.extend(std::iter::repeat_n(0.3f32, 34 * 480));
+        clip.extend(vec![0.0f32; 48_000]);
+        let kept = trim_silence(&clip);
+        assert_eq!(kept.len(), 34 * 480 + 2 * 4_000);
+        assert_eq!(kept[4_000], 0.3);
+        // All silence, or no silence: unchanged.
+        assert_eq!(trim_silence(&[0.0; 8_000]).len(), 8_000);
+        assert_eq!(trim_silence(&[0.5; 8_000]).len(), 8_000);
+    }
 
     #[test]
     fn stereo_48k_becomes_mono_16k() {

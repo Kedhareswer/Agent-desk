@@ -10,6 +10,86 @@ the release workflow uses that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+### Security
+
+- Your data cannot leave unasked: once a file, folder or the clipboard has
+  been read in a conversation, every link asks before it opens, and so does
+  any link with a long query or fragment. Attaching a file always asks
+  (Teams uploads it straight away), and clicking Upload asks.
+- Codex can no longer run commands: its shell is switched off for every run,
+  so it cannot read files around Agent Desk's checks.
+- Opening files: only documents, pictures and media open without asking;
+  programs, scripts, shortcuts, macro documents, disk images and the like
+  ask. Names ending in a dot or space are refused, network paths
+  (`\server\share`, WebDAV) are refused before they are touched, and the
+  off-limits check runs on the real, canonical path (short names such as
+  `APPDAT~1` no longer slip past).
+- "Always allow" is narrower: per key combination, per file type, per
+  button; never offered for schedules, programs, attachments or links.
+- A lone carriage return now counts as Enter, other control characters
+  cannot be typed, and copying text with a line break asks.
+- More buttons ask first: Allow, Authorize, Grant, Agree, Yes, OK,
+  Continue, Upload, Commit, Join, Call, Update; and a click on an unnamed
+  spot of a screenshot asks.
+- Agent Desk refuses to click its own window, and nothing runs while a step
+  is waiting for your answer.
+- Scheduled tasks ask before every step, since nobody asked just then.
+- The local action server checks the key before reading a request, caps
+  request size and open connections, and its key comes from Windows'
+  system random generator. The file holding it is deleted on Quit.
+- A strict content security policy for the notch; the glow window can no
+  longer call any of the app's commands.
+
+### Changed
+
+- The notch shows only "Listening" while you talk; the dot meter is gone.
+- A finished answer goes away by itself after 5 seconds. Keep the mouse
+  over it to keep it open.
+- A follow-up question replaces the previous answer instead of piling up
+  under it. The conversation itself is still remembered.
+- Settings and close are now at the right edge of the notch.
+- Faster speech to text: silence before and after you speak is skipped,
+  Whisper only processes as much audio as you said, and its working memory
+  is reused between questions.
+- Smoother on slower computers: the indicator's glow and the window
+  resizing while an answer streams in cost much less.
+
+### Added
+
+- Agent Desk can now act on your computer: open web pages and apps, switch
+  windows, type, press shortcuts, run commands you saved, and look at the
+  screen again. Say "open Chrome and go to GitHub" and it does it. Every
+  step shows in the notch, and anything that sends, deletes, buys or runs
+  a command waits for your OK, with an "Always allow" option per type.
+- Schedules: "every weekday at 9, open my calendar and summarise today" or
+  "remind me at 5 to send the report". Manage them in Settings → Schedules.
+- Settings → Actions: turn actions off, undo "Always allow", and save
+  commands the AI may run by name.
+- Full desktop control: Agent Desk can see the buttons, links and text
+  boxes in any app (including web pages in your own browser), move the
+  mouse pointer visibly and click, fill in text, scroll, use the clipboard,
+  open files and folders, read text, Word and PDF documents, and attach a
+  file in Teams, Slack or Outlook in one step. Clicking Send, Delete, Buy
+  and the like waits for your OK, button by button.
+- Browser profiles: it asks once which Chrome, Edge or Brave profile to use
+  and remembers it (reset it in Settings).
+- A setup screen on first launch (and from the tray, "Setup and guide"):
+  checks that Claude Code or Codex is installed and signed in, shows the
+  account and plan, copies the sign-in command, lets you pin one account
+  folder, picks the model from the CLI's own list, shows which speech
+  models are downloaded with live download progress, and explains how to
+  use everything.
+
+### Changed
+
+- Faster actions: clicks, typing and attachments hand back what is on
+  screen straight away, so the AI needs fewer round trips.
+- Lighter when hidden: the notch and glow web views are asked to release
+  memory while they are not shown.
+- Claude and Codex now get Agent Desk's own actions as tools (through a
+  local MCP server). They still get none of their own tools, and for Codex
+  your apps, plugins and MCP servers are switched off during these runs.
+
 ## [0.1.2] - 2026-11-19
 
 ### Added

@@ -20,7 +20,7 @@
     "build": "tauri build",
     "test": "npm run test:rust && npm run test:ui",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
-    "test:ui": "node tests/ui.test.mjs",
+    "test:ui": "node tests/csp.test.mjs && node tests/ui.test.mjs",
     "lint": "cargo fmt --manifest-path src-tauri/Cargo.toml --check && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets && node scripts/version.mjs --check",
     "format": "cargo fmt --manifest-path src-tauri/Cargo.toml",
     "release:version": "node scripts/version.mjs",

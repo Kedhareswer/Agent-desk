@@ -22,9 +22,6 @@
 </head>
 <body>
 <div id="glow"></div>
-<script>
-  const glow = document.getElementById("glow");
-  window.__TAURI__.event.listen("glow", ({ payload }) => glow.classList.toggle("on", !!payload));
-</script>
+<script src="glow.js"></script>
 </body>
 </html>
