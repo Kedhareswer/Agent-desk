@@ -171,9 +171,11 @@ impl Transcriber {
         let english = loaded.name.ends_with(".en");
         let state = loaded.state.as_mut().expect("just made");
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+        // Leave a core free so the keyboard hook and the notch stay
+        // responsive while it works.
         let threads = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4)
+            .map(|n| n.get().saturating_sub(1))
+            .unwrap_or(3)
             .clamp(1, 8);
         params.set_n_threads(threads as i32);
         params.set_language(if english { Some("en") } else { None });

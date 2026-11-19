@@ -53,6 +53,8 @@ pub(crate) const SHOT_MAX_EDGE: u32 = 1568;
 /// Holding the wake keys for less than this is a tap (open to type);
 /// longer is speech.
 const TAP_MS: u64 = 280;
+/// A hold this short with no speech in it was a slow tap, not talking.
+const SLOW_TAP_MS: u64 = 900;
 /// Pastes the latest answer into the app in front, without touching the overlay.
 const INSERT_SHORTCUT: &str = "Ctrl+Alt+Enter";
 
@@ -793,11 +795,19 @@ fn talk_start(app: &AppHandle) {
 }
 
 /// The wake keys were released after `held_ms`.
+/// The keys were let go. Takes the recording at once (so the next press
+/// starts a new one), then does the slow part on its own thread.
 fn talk_end(app: &AppHandle, held_ms: u64) {
     let state = app.state::<App>();
     let Some(talk) = state.talk.lock().unwrap().take() else {
         return;
     };
+    let app = app.clone();
+    std::thread::spawn(move || finish_talk(&app, talk, held_ms));
+}
+
+fn finish_talk(app: &AppHandle, talk: Talk, held_ms: u64) {
+    let state = app.state::<App>();
     if held_ms < TAP_MS {
         talk.recording.cancel();
         toggle_overlay(app);
@@ -808,6 +818,17 @@ fn talk_end(app: &AppHandle, held_ms: u64) {
     let result = (|| -> Result<u64, String> {
         let samples = talk.recording.finish()?;
         if !audio::has_speech(&samples) {
+            // A slow tap rather than speech: open the notch for typing
+            // instead of complaining that nothing was heard.
+            if held_ms < SLOW_TAP_MS {
+                phase(app, "cancelled", "");
+                if let Some(win) = overlay(app) {
+                    if !win.is_focused().unwrap_or(false) {
+                        show_overlay(app, true, None);
+                    }
+                }
+                return Ok(0);
+            }
             return Err("I didn't hear anything. Hold the keys while you speak.".into());
         }
         prepare_speech(app, true)?;
@@ -834,6 +855,16 @@ fn talk_end(app: &AppHandle, held_ms: u64) {
     })();
     if let Err(message) = result {
         phase(app, "error", message);
+    }
+}
+
+/// Queue a talk gesture for the worker thread (see `setup`).
+static GESTURES: std::sync::OnceLock<Mutex<std::sync::mpsc::Sender<Gesture>>> =
+    std::sync::OnceLock::new();
+
+fn send_gesture(gesture: Gesture) {
+    if let Some(tx) = GESTURES.get() {
+        let _ = tx.lock().unwrap().send(gesture);
     }
 }
 
@@ -1407,6 +1438,20 @@ fn mark_update_ready(app: &AppHandle, version: &str) {
 fn update_clicked(app: &AppHandle) {
     let state = app.state::<App>();
     let channel = update::channel();
+    if channel == update::Channel::Scoop {
+        // Scoop cannot update a running app: close, let Scoop update, and
+        // come back as the new version.
+        tell(
+            app,
+            "Updating with Scoop. Agent Desk will close and open again in a moment.",
+        );
+        std::thread::sleep(Duration::from_millis(1500));
+        match update::update_with_scoop() {
+            Ok(()) => quit_app(app),
+            Err(e) => tell(app, format!("{e} {}", update::manual_hint(channel))),
+        }
+        return;
+    }
     if channel != update::Channel::Installer {
         tell(app, update::manual_hint(channel));
         return;
@@ -1432,6 +1477,15 @@ fn update_clicked(app: &AppHandle) {
     if let Err(e) = update::install(&state.updates) {
         tell(app, e);
     }
+}
+
+/// Close cleanly: no step left waiting, the AI process stopped, the action
+/// server's key file removed.
+fn quit_app(app: &AppHandle) {
+    tasks::deny_all(&app.state::<App>());
+    app.state::<App>().engine.stop();
+    app.state::<App>().engine.forget_tool_config();
+    app.exit(0);
 }
 
 /// Check for updates now and then, if the user allows it.
@@ -1474,7 +1528,12 @@ fn build_tray(app: &AppHandle, hide_from_capture: bool) -> tauri::Result<()> {
         hide_from_capture,
         None::<&str>,
     )?;
-    let update_item = MenuItem::with_id(app, "update", "Check for updates…", true, None::<&str>)?;
+    let update_label = if update::channel() == update::Channel::Scoop {
+        "Update with Scoop"
+    } else {
+        "Check for updates…"
+    };
+    let update_item = MenuItem::with_id(app, "update", update_label, true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
@@ -1537,12 +1596,7 @@ fn build_tray(app: &AppHandle, hide_from_capture: bool) -> tauri::Result<()> {
                 let app = app.clone();
                 std::thread::spawn(move || update_clicked(&app));
             }
-            "quit" => {
-                tasks::deny_all(&app.state::<App>());
-                app.state::<App>().engine.stop();
-                app.state::<App>().engine.forget_tool_config();
-                app.exit(0);
-            }
+            "quit" => quit_app(app),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -1606,27 +1660,25 @@ fn main() {
                     // The user's shortcut works like the wake keys: hold to
                     // talk, tap to type. The work happens off this thread.
                     let pressed = event.state() == ShortcutState::Pressed;
-                    std::thread::spawn(move || {
-                        let state = app.state::<App>();
-                        if pressed {
-                            let first = {
-                                let mut down = state.shortcut_down.lock().unwrap();
-                                let first = down.is_none(); // ignore key repeat
-                                if first {
-                                    *down = Some(Instant::now());
-                                }
-                                first
-                            };
+                    let state = app.state::<App>();
+                    if pressed {
+                        let first = {
+                            let mut down = state.shortcut_down.lock().unwrap();
+                            let first = down.is_none(); // ignore key repeat
                             if first {
-                                talk_start(&app);
+                                *down = Some(Instant::now());
                             }
-                        } else {
-                            let since = state.shortcut_down.lock().unwrap().take();
-                            if let Some(since) = since {
-                                talk_end(&app, since.elapsed().as_millis() as u64);
-                            }
+                            first
+                        };
+                        if first {
+                            send_gesture(Gesture::Down);
                         }
-                    });
+                    } else {
+                        let since = state.shortcut_down.lock().unwrap().take();
+                        if let Some(since) = since {
+                            send_gesture(Gesture::Up(since.elapsed().as_millis() as u64));
+                        }
+                    }
                 })
                 .build(),
         )
@@ -1722,18 +1774,28 @@ fn main() {
             tasks::watch_schedules(handle.clone());
 
             // Gestures arrive on the keyboard hook thread, which must return
-            // at once, so the work moves to its own thread.
-            let hook_app = handle.clone();
-            hotkey::init(Box::new(move |gesture| {
-                let app = hook_app.clone();
-                std::thread::spawn(move || match gesture {
-                    Gesture::Down => talk_start(&app),
-                    Gesture::Up(held) => talk_end(&app, held),
-                    Gesture::Cancel => talk_cancel(&app),
-                    Gesture::Tap => toggle_overlay(&app),
-                    Gesture::None => {}
-                });
-            }));
+            // at once. They are handled on one worker thread, strictly in
+            // order: with a thread per gesture, a busy computer could run a
+            // release before its press, leaving a recording nothing ends
+            // and Ctrl + Alt seemingly dead until the next release.
+            let (tx, rx) = std::sync::mpsc::channel::<Gesture>();
+            let _ = GESTURES.set(Mutex::new(tx));
+            let worker_app = handle.clone();
+            std::thread::spawn(move || {
+                for gesture in rx {
+                    let app = worker_app.clone();
+                    match gesture {
+                        Gesture::Down => talk_start(&app),
+                        Gesture::Up(held) => talk_end(&app, held),
+                        Gesture::Cancel => talk_cancel(&app),
+                        Gesture::Tap => {
+                            std::thread::spawn(move || toggle_overlay(&app));
+                        }
+                        Gesture::None => {}
+                    }
+                }
+            });
+            hotkey::init(Box::new(send_gesture));
             if let Some(warning) = apply_settings(&handle, &settings) {
                 eprintln!("agent-desk: {warning}");
             }

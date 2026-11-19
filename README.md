@@ -20,7 +20,7 @@ The answer appears in a small notch at the edge of your screen.
 
 <br>
 
-<img src="docs/media/demo.gif" alt="Holding Ctrl + Alt and asking Agent Desk to draft a reply to the email on screen. The notch shows Listening, then Transcribing, then grows into the drafted reply." width="900">
+<img src="docs/media/demo.gif" alt="Holding Ctrl + Alt and asking Agent Desk to draft a reply to the email on screen. The screen edge glows while it listens, the notch shows Listening, then Transcribing, then grows into the drafted reply with Insert, Copy, New, Read aloud and Pin." width="900">
 
 </div>
 
@@ -44,16 +44,19 @@ The answer appears in a small notch at the edge of your screen.
 
 | | |
 | --- | --- |
-| 🎙️ **Hold to talk** | Hold <kbd>Ctrl</kbd> + <kbd>Alt</kbd>, speak, release. No Enter key. |
+| 🎙️ **Hold to talk** | Hold <kbd>Ctrl</kbd> + <kbd>Alt</kbd> (or <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Space</kbd>), speak, release. No Enter key. |
 | ⌨️ **Tap to type** | A quick tap opens the same notch with a text box. |
 | 🤝 **Work with me (live mode)** | <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>L</kbd> follows a call or a session and speaks up only when it can help, for example when someone asks a question. |
-| 🖱️ **Does things for you** | "Open Chrome and go to GitHub", "attach the report from Documents and send it to my team in Teams". It sees buttons and links by name, moves the pointer visibly, clicks, types, reads Word and PDF files. Every step shows in the notch; anything that sends, deletes, buys or runs a command waits for your OK. |
+| 🖱️ **Does things for you** | "Open Chrome and go to GitHub", "attach the report from Documents and send it to my team in Teams". It sees buttons and links by name, clicks, types, scrolls, reads Word and PDF files. Its own pointer, labelled "Agent Desk", shows where it works; your mouse stays yours. Each step shows on one line in the notch; anything that sends, deletes, buys or runs a command waits for your OK. |
 | ⏰ **Schedules** | "Every weekday at 9, open my calendar and summarise today." "Remind me at 5 to send the report." Pause, edit or delete them in Settings. |
 | 📋 **Paste back** | <kbd>Ctrl</kbd> + <kbd>Enter</kbd> puts the answer into the app you came from. |
 | 🧩 **One notch** | It shows only its state (Listening, Thinking, Answering) and grows into the answer when there is something to read. |
+| 👻 **Never in the way** | The mouse goes straight through the notch to the app underneath. Only its buttons take clicks; hold <kbd>Ctrl</kbd> over a long answer to scroll it. |
+| 🔊 **Read aloud and pin** | Have an answer read out with Windows' own voices, or pin it so it stays open. |
+| 🕘 **Earlier answers** | <kbd>Ctrl</kbd> + <kbd>H</kbd> lists what you asked before, with search, "Ask again" and "Copy". Kept on your computer only. |
 | 📐 **Any edge, any screen** | Drag it to the top, bottom, left or right of any monitor. Transparency is adjustable. |
 | 🙈 **Hidden from screen shares** | The notch and its glow do not appear in screenshots, recordings or calls (you can turn this off). |
-| 🔄 **Updates itself** | Installer copies check for new versions in the background and offer "Restart to update" in the tray. |
+| 🔄 **Updates itself** | Installer copies check for new versions in the background and offer "Restart to update" in the tray. Scoop copies update from the tray with **Update with Scoop**. |
 
 ## Requirements
 
@@ -70,7 +73,7 @@ The answer appears in a small notch at the edge of your screen.
 | Method | Command or download | Updates |
 | --- | --- | --- |
 | **Installer** (recommended) | [`Agent-Desk_<version>_x64-setup.exe`](https://github.com/Kedhareswer/Agent-desk/releases/latest) | In the app |
-| **Scoop** | `scoop bucket add agent-desk https://github.com/Kedhareswer/Agent-desk`<br>`scoop install agent-desk` | `scoop update agent-desk` |
+| **Scoop** | `scoop bucket add agent-desk https://github.com/Kedhareswer/Agent-desk`<br>`scoop install agent-desk` | Tray → **Update with Scoop**, or quit Agent Desk and run `scoop update agent-desk` |
 | **Portable** | [`Agent-Desk_<version>_x64-portable.zip`](https://github.com/Kedhareswer/Agent-desk/releases/latest), unzip, run `agent-desk.exe` | Download again |
 | **winget** *(coming soon)* | `winget install Kedhareswer.AgentDesk` | `winget upgrade` |
 | **Chocolatey** *(coming soon)* | `choco install agent-desk` | `choco upgrade` |
@@ -82,7 +85,7 @@ signed yet, so Windows SmartScreen asks you to confirm the first time.
 ## How to use it
 
 <div align="center">
-<img src="docs/media/how-to.gif" alt="Tapping Ctrl + Alt to type a question, opening Settings inside the notch, and live mode answering a question heard in a call." width="900">
+<img src="docs/media/how-to.gif" alt="Tapping Ctrl + Alt to type a question, pinning the answer, searching earlier answers with Ctrl + H, opening Settings inside the notch, and live mode answering a question heard in a call." width="900">
 </div>
 
 1. **Start Agent Desk.** It lives in the tray, next to the clock.
@@ -95,6 +98,20 @@ signed yet, so Windows SmartScreen asks you to confirm the first time.
 4. **Ask a follow-up** by holding the keys again. The conversation
    continues until you start a new one.
 5. **Press <kbd>Esc</kbd>** to stop an answer or hide the notch.
+
+### Let it do things
+
+<div align="center">
+<img src="docs/media/act.gif" alt="Asking Agent Desk to check whether you are the top contributor on your GitHub repositories. The screen edge glows in its working colour, one line in the notch shows each step as it happens (open github.com, click Repositories, scroll down, read the contributors), Agent Desk's own labelled pointer moves to each spot, and the answer appears." width="900">
+</div>
+
+Ask for something to be done instead of answered: "open my GitHub and
+check whether I'm the top contributor", "find the invoice from March and
+attach it to this email". While it works, the screen edge glows in its
+working colour, one line in the notch shows the step it is on, and its own
+pointer (labelled **Agent Desk**) shows where it is clicking or scrolling.
+Your own mouse is never moved. Anything that sends, posts, deletes, buys or
+runs a command waits for **Allow** first.
 
 ### Keyboard shortcuts
 
@@ -115,9 +132,9 @@ signed yet, so Windows SmartScreen asks you to confirm the first time.
 | <kbd>Ctrl</kbd> (hold over the answer) | Scroll or select a long answer; otherwise the mouse goes through the notch |
 | <kbd>Esc</kbd> | Stop the answer, then hide |
 
-Prefer a different key? Set your own shortcut in Settings (default
-<kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Space</kbd>). It works the same
-way: hold to talk, tap to type.
+<kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Space</kbd> always works too, the same
+way: hold to talk, tap to type. Prefer a different key? Set your own
+shortcut in Settings.
 
 ### Settings
 
@@ -274,7 +291,9 @@ detail.
 | --- | --- |
 | "The `claude` command was not found" | Install Claude Code and run `claude` once to sign in, or set its path in Settings. |
 | It says "Downloading speech model" | This happens once, the first time you talk. Wait for 100%. |
-| Holding <kbd>Ctrl</kbd> + <kbd>Alt</kbd> does nothing | Check that Agent Desk is in the tray. Another app may use the same keys; set your own shortcut in Settings. |
+| Holding <kbd>Ctrl</kbd> + <kbd>Alt</kbd> does nothing | Check that Agent Desk is in the tray. While an app running as administrator is in front, Windows does not pass its keys to Agent Desk; use <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Space</kbd> there. Another app may use the same keys; set your own shortcut in Settings. |
+| `scoop update agent-desk` says Agent Desk is still running | Use **Update with Scoop** in the tray (it closes, updates and reopens Agent Desk), or quit from the tray first. |
+| A click went through the notch | That is on purpose: only its buttons take the mouse. Tap <kbd>Ctrl</kbd> + <kbd>Alt</kbd> to type into it; hold <kbd>Ctrl</kbd> to scroll a long answer. |
 | "There is no app called … in the Start menu" | Use the name shown in the Start menu, or ask it to open the website instead. |
 | A schedule did not run | Agent Desk must be running at that time. Check **Start with Windows**, and that the schedule is not paused. |
 | "I didn't hear anything" | Check the microphone in Windows Settings → Privacy → Microphone, and hold the keys while you speak. |

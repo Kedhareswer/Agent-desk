@@ -26,14 +26,21 @@ impl Mode {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Key {
     Ctrl,
-    /// Left Alt only. Right Alt is AltGr on many layouts (it arrives as
-    /// Ctrl+Alt), so it counts as `Other` to keep typing "@" or "€" from
-    /// waking the assistant.
+    /// Either Alt key. On layouts with AltGr, Right Alt sends a fake Left
+    /// Ctrl first; the hook reports that fake Ctrl as `Other`, so typing
+    /// "@" or "€" never wakes the assistant.
     Alt,
     Other,
 }
 
 const TAP_MAX_MS: u64 = 300;
+/// A held key repeats (the last one pressed, after at most a second), so
+/// when no Ctrl or Alt event at all has come for this long, the keys were
+/// let go without the hook seeing it (a lock screen, an elevated window, a
+/// dropped hook).
+const STALE_MS: u64 = 1500;
+/// Nobody talks this long in one go: a hold whose release was missed ends.
+const MAX_HOLD_MS: u64 = 120_000;
 const DOUBLE_TAP_GAP_MS: u64 = 400;
 
 /// What a key event meant.
@@ -57,6 +64,8 @@ pub struct Detector {
     pub mode: Mode,
     ctrl: bool,
     alt: bool,
+    /// When Ctrl or Alt was last seen down (presses and repeats).
+    mod_at: u64,
     /// Another key was pressed during this chord, so it is a normal shortcut.
     dirty: bool,
     armed: bool,
@@ -70,6 +79,7 @@ impl Detector {
             mode,
             ctrl: false,
             alt: false,
+            mod_at: 0,
             dirty: false,
             armed: false,
             press_start: 0,
@@ -93,10 +103,28 @@ impl Detector {
     }
 
     fn ctrl_alt(&mut self, key: Key, down: bool, now: u64) -> Gesture {
+        // Forget a modifier whose release was never seen, so the gesture
+        // cannot stay stuck until that key happens to be pressed again.
+        if self.armed {
+            if now.saturating_sub(self.press_start) > MAX_HOLD_MS {
+                *self = Self::new(self.mode);
+                return Gesture::Cancel;
+            }
+        } else if (self.ctrl || self.alt) && now.saturating_sub(self.mod_at) > STALE_MS {
+            self.ctrl = false;
+            self.alt = false;
+            self.dirty = false;
+        }
         if down {
             match key {
-                Key::Ctrl => self.ctrl = true,
-                Key::Alt => self.alt = true,
+                Key::Ctrl => {
+                    self.ctrl = true;
+                    self.mod_at = now;
+                }
+                Key::Alt => {
+                    self.alt = true;
+                    self.mod_at = now;
+                }
                 Key::Other => {
                     let was_armed = self.armed;
                     self.dirty = self.ctrl || self.alt;
@@ -178,13 +206,24 @@ mod hook {
     use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::System::Threading::GetCurrentThreadId;
+    use windows::Win32::System::Threading::{
+        GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
+    };
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_RCONTROL,
+        VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_MENU, VK_RCONTROL, VK_RMENU,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        CallNextHookEx, GetMessageW, PostThreadMessageW, SetWindowsHookExW, UnhookWindowsHookEx,
-        KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_QUIT, WM_SYSKEYDOWN,
+        CallNextHookEx, GetMessageW, KillTimer, PostThreadMessageW, SetTimer, SetWindowsHookExW,
+        UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSG, WH_KEYBOARD_LL,
+        WM_KEYDOWN, WM_QUIT, WM_SYSKEYDOWN, WM_TIMER,
     };
+
+    /// AltGr's fake Left Ctrl carries this scan code.
+    const ALTGR_CTRL_SCAN: u32 = 0x21D;
+    /// Windows silently removes a low-level hook that is too slow to answer
+    /// (easily, while speech is being transcribed on every core), and never
+    /// says so. Putting the hook back now and then keeps Ctrl + Alt working.
+    const REHOOK_MS: u32 = 15_000;
 
     static DETECTOR: Mutex<Detector> = Mutex::new(Detector::new(Mode::Off));
     static CALLBACK: OnceLock<Box<dyn Fn(Gesture) + Send + Sync>> = OnceLock::new();
@@ -196,9 +235,11 @@ mod hook {
             // Skip keys typed by software (including our own paste).
             if (info.flags.0 & LLKHF_INJECTED.0) == 0 {
                 let vk = info.vkCode as u16;
-                let key = if vk == VK_LCONTROL.0 || vk == VK_RCONTROL.0 || vk == VK_CONTROL.0 {
+                let key = if vk == VK_LCONTROL.0 && info.scanCode == ALTGR_CTRL_SCAN {
+                    Key::Other // AltGr, not the user's Ctrl
+                } else if vk == VK_LCONTROL.0 || vk == VK_RCONTROL.0 || vk == VK_CONTROL.0 {
                     Key::Ctrl
-                } else if vk == VK_LMENU.0 {
+                } else if vk == VK_LMENU.0 || vk == VK_RMENU.0 || vk == VK_MENU.0 {
                     Key::Alt
                 } else {
                     Key::Other
@@ -241,13 +282,31 @@ mod hook {
         }
         std::thread::spawn(|| unsafe {
             HOOK_THREAD.store(GetCurrentThreadId(), Ordering::SeqCst);
-            let module = GetModuleHandleW(None).ok().map(|m| m.into());
-            if let Ok(hook) = SetWindowsHookExW(WH_KEYBOARD_LL, Some(on_event), module, 0) {
+            // Answer key events first, even when every core is busy.
+            let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+            let module: Option<windows::Win32::Foundation::HINSTANCE> =
+                GetModuleHandleW(None).ok().map(|m| m.into());
+            let install = || SetWindowsHookExW(WH_KEYBOARD_LL, Some(on_event), module, 0).ok();
+            let mut hook: Option<HHOOK> = install();
+            if hook.is_some() {
+                let timer = SetTimer(None, 0, REHOOK_MS, None);
                 // A low-level hook is delivered through this thread's
                 // message queue, so it has to keep pumping messages.
                 let mut msg = MSG::default();
-                while GetMessageW(&mut msg, None, 0, 0).as_bool() {}
-                let _ = UnhookWindowsHookEx(hook);
+                while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                    if msg.message == WM_TIMER {
+                        // New hook first, then the old one goes: no gap.
+                        if let Some(fresh) = install() {
+                            if let Some(old) = hook.replace(fresh) {
+                                let _ = UnhookWindowsHookEx(old);
+                            }
+                        }
+                    }
+                }
+                let _ = KillTimer(None, timer);
+                if let Some(h) = hook {
+                    let _ = UnhookWindowsHookEx(h);
+                }
             }
             HOOK_THREAD.store(0, Ordering::SeqCst);
         });
@@ -384,6 +443,52 @@ mod tests {
             ],
         );
         assert_eq!(g, vec![Down, Cancel, Down, Up(50)]);
+    }
+
+    #[test]
+    fn a_missed_release_does_not_leave_it_stuck() {
+        // Ctrl went down, then its release was never seen (say, the lock
+        // screen took it). Long after, a fresh Ctrl+Alt still works.
+        let g = run(
+            Mode::CtrlAlt,
+            &[
+                (Key::Ctrl, true, 0),
+                (Key::Other, true, 10),
+                (Key::Other, false, 20),
+                (Key::Ctrl, true, 60_000),
+                (Key::Alt, true, 60_010),
+                (Key::Alt, false, 60_300),
+                (Key::Ctrl, false, 60_310),
+            ],
+        );
+        assert_eq!(g, vec![Down, Up(290)]);
+    }
+
+    #[test]
+    fn a_hold_whose_release_was_missed_is_cancelled() {
+        let g = run(
+            Mode::CtrlAlt,
+            &[
+                (Key::Ctrl, true, 0),
+                (Key::Alt, true, 10),
+                // ... no release seen for minutes ...
+                (Key::Other, false, 130_000),
+            ],
+        );
+        assert_eq!(g, vec![Down, Cancel]);
+    }
+
+    #[test]
+    fn a_long_hold_with_key_repeat_is_not_stale() {
+        // Only the last key pressed repeats (here none at all): a long
+        // hold still ends normally.
+        let events = [
+            (Key::Ctrl, true, 0),
+            (Key::Alt, true, 10),
+            (Key::Alt, false, 30_010),
+            (Key::Ctrl, false, 30_020),
+        ];
+        assert_eq!(run(Mode::CtrlAlt, &events), vec![Down, Up(30_000)]);
     }
 
     #[test]

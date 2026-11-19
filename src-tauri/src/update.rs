@@ -2,8 +2,10 @@
 //!
 //! Only a copy installed with the Windows installer updates itself. Scoop,
 //! winget, Chocolatey and the portable zip each have their own update
-//! command, and two updaters fighting over one folder would break it, so
-//! those copies just say how to update.
+//! command, and two updaters fighting over one folder would break it.
+//! Scoop refuses to update an app that is running, so for a Scoop copy the
+//! tray's update item closes Agent Desk, runs Scoop's own update, and opens
+//! the new version: Scoop still does the updating.
 //!
 //! An update is checked for a little after start and then every few hours.
 //! When one is found it is downloaded and verified in the background, and
@@ -64,10 +66,54 @@ pub fn channel_for(exe: &std::path::Path, debug: bool) -> Channel {
     }
 }
 
+/// For a Scoop copy, the PowerShell that waits for Agent Desk to close,
+/// lets Scoop update it, and starts the new version. `exe` is the running
+/// copy (…\scoop\apps\agent-desk\<version>\agent-desk.exe).
+pub fn scoop_script(exe: &std::path::Path) -> Option<String> {
+    let app_dir = exe.parent()?.parent()?; // …\scoop\apps\agent-desk
+    let scoop_dir = app_dir.parent()?.parent()?; // …\scoop
+    let quote = |p: &std::path::Path| format!("'{}'", p.display().to_string().replace('\'', "''"));
+    let scoop = scoop_dir.join("apps\\scoop\\current\\bin\\scoop.ps1");
+    let current = app_dir.join("current\\agent-desk.exe");
+    Some(format!(
+        "$i = 0; while ((Get-Process agent-desk -ErrorAction SilentlyContinue) -and $i -lt 100) {{ Start-Sleep -Milliseconds 300; $i++ }}; \
+         & {scoop} update *> $null; & {scoop} update agent-desk *> $null; \
+         Start-Process {current}",
+        scoop = quote(&scoop),
+        current = quote(&current),
+    ))
+}
+
+/// Start Scoop's update in the background. The caller then quits, so the
+/// files are free to replace.
+pub fn update_with_scoop() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let script = scoop_script(&exe).ok_or("Could not find the Scoop folder.")?;
+    let mut cmd = std::process::Command::new("powershell.exe");
+    cmd.args([
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-WindowStyle",
+        "Hidden",
+        "-Command",
+        &script,
+    ]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // Its own process, no console window, and it outlives the app.
+        cmd.creation_flags(0x0800_0000 | 0x0000_0008 | 0x0000_0200);
+    }
+    cmd.spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Could not start Scoop: {e}"))
+}
+
 /// What to tell someone whose copy cannot update itself.
 pub fn manual_hint(channel: Channel) -> &'static str {
     match channel {
-        Channel::Scoop => "This copy was installed with Scoop. To update it, run: scoop update agent-desk",
+        Channel::Scoop => "This copy was installed with Scoop. Quit Agent Desk from the tray, then run: scoop update agent-desk",
         _ => "This copy cannot update itself. Download the latest version from github.com/Kedhareswer/Agent-desk/releases",
     }
 }
@@ -125,6 +171,24 @@ fn explain(e: tauri_plugin_updater::Error) -> String {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn the_scoop_update_waits_then_uses_scoop_and_restarts() {
+        let exe = Path::new(r"C:\Users\me\scoop\apps\agent-desk\0.1.6\agent-desk.exe");
+        let s = scoop_script(exe).unwrap();
+        assert!(s.contains("Get-Process agent-desk"));
+        assert!(
+            s.contains(r"& 'C:\Users\me\scoop\apps\scoop\current\bin\scoop.ps1' update agent-desk")
+        );
+        assert!(
+            s.contains(r"Start-Process 'C:\Users\me\scoop\apps\agent-desk\current\agent-desk.exe'")
+        );
+        // A quote in a folder name cannot break out of the string.
+        let odd = Path::new(r"C:\Users\o'neil\scoop\apps\agent-desk\0.1.6\agent-desk.exe");
+        assert!(scoop_script(odd)
+            .unwrap()
+            .contains(r"'C:\Users\o''neil\scoop"));
+    }
 
     #[test]
     fn scoop_copies_are_left_to_scoop() {

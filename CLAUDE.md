@@ -104,6 +104,8 @@ ui/                         Plain HTML/CSS/JS – no framework, no build step
   glow.html                 Click-through screen-edge glow
 tests/ui.test.mjs           Playwright test of the UI with a fake Tauri bridge
 scripts/version.mjs         One version everywhere; changelog → release notes
+scripts/record-demo.mjs     README GIFs (demo, act, how-to) from the real UI
+                            with a fake bridge; needs ffmpeg
 scripts/packaging.mjs       Scoop / winget / Chocolatey manifests + SHA256SUMS
 packaging/README.md         One-time package manager setup (secrets, first
                             winget submission)
@@ -348,6 +350,19 @@ while a step waits for the user's OK.)
   wake. Right Alt (AltGr) counts as "other". Injected keys are ignored.
 - Keep `hotkey::Detector` pure and covered by unit tests; change behaviour
   there, not in the hook callback.
+- Gestures go to one worker thread through a channel (`send_gesture`) and
+  are handled strictly in order; never a thread per gesture (a release
+  could overtake its press). `talk_end` takes the recording at once and
+  transcribes on its own thread.
+- Windows silently removes a low-level hook that answers too slowly. The
+  hook thread runs at `THREAD_PRIORITY_TIME_CRITICAL`, re-installs the hook
+  every 15 s (`REHOOK_MS`, new before old), and Whisper leaves a core free.
+- A modifier with no Ctrl/Alt event for 1.5 s (when not recording) is
+  forgotten, and a recording with no release for 2 minutes is cancelled, so
+  a missed key-up cannot leave the gesture dead. Only the last key pressed
+  auto-repeats, so never time out a hold in progress sooner than that.
+- Either Alt works; AltGr's fake Left Ctrl (scan code 0x21D) counts as
+  another key, so AltGr never wakes it.
 
 ## Design rules (the notch)
 
@@ -482,7 +497,11 @@ lints are warnings.
 (`plugins.updater` in `tauri.conf.json`, which holds the public key). Only
 copies installed by our NSIS installer update themselves (`update::channel`
 looks for `uninstall.exe` next to the exe); Scoop, winget, Chocolatey and
-the zip are left to their own tools so two updaters never fight. Updates are
+the zip are left to their own tools so two updaters never fight. Scoop
+will not update a running app, so for a Scoop copy the tray's **Update with
+Scoop** starts a hidden PowerShell (`update::scoop_script`) that waits for
+Agent Desk to exit, runs Scoop's own `scoop update agent-desk`, and starts
+`current\agent-desk.exe`; then the app quits (`quit_app`). Updates are
 downloaded in the background but installed only when the user picks
 "Restart to update" in the tray, because installing closes the app.
 
