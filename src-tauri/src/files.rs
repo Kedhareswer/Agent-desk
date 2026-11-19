@@ -90,40 +90,97 @@ pub fn is_off_limits(path: &Path) -> bool {
         || lower.starts_with("c:\\windows")
 }
 
-/// Opening one of these runs a program, so it waits for the user's OK.
-pub fn runs_something(path: &Path) -> bool {
-    let ext = path
-        .extension()
-        .map(|e| e.to_string_lossy().to_lowercase())
+/// File types that only show content: documents, pictures, sound and
+/// video. Opening one of these runs nothing.
+const SAFE_TO_OPEN: [&str; 40] = [
+    "txt", "md", "markdown", "csv", "tsv", "json", "log", "xml", "yaml", "yml", "pdf", "docx",
+    "doc", "xlsx", "xls", "pptx", "ppt", "odt", "ods", "odp", "rtf", "png", "jpg", "jpeg", "gif",
+    "bmp", "webp", "tif", "tiff", "heic", "svg", "mp3", "wav", "m4a", "flac", "mp4", "mov", "mkv",
+    "avi", "webm",
+];
+
+/// Whether opening this needs the user's OK. Folders and the plain
+/// document, picture and media types above do not; anything else might
+/// run something (programs, scripts, shortcuts, macros, disk images, remote
+/// desktop files, search connectors…), so it asks.
+pub fn needs_ok_to_open(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
-    [
-        "exe",
-        "bat",
-        "cmd",
-        "com",
-        "ps1",
-        "vbs",
-        "vbe",
-        "js",
-        "jse",
-        "wsf",
-        "wsh",
-        "msi",
-        "msc",
-        "scr",
-        "hta",
-        "jar",
-        "py",
-        "pyw",
-        "reg",
-        "lnk",
-        "url",
-        "appref-ms",
-        "cpl",
-        "inf",
-        "sh",
-    ]
-    .contains(&ext.as_str())
+    if has_trailing_dot_or_space(&name) {
+        return true;
+    }
+    match path.extension() {
+        // No extension: a folder (or a file Windows will not run).
+        None => false,
+        Some(ext) => !SAFE_TO_OPEN.contains(&ext.to_string_lossy().to_lowercase().as_str()),
+    }
+}
+
+/// "setup.exe." and "setup.exe " are opened by Windows as "setup.exe".
+pub fn has_trailing_dot_or_space(name: &str) -> bool {
+    name.ends_with('.') || name.ends_with(' ')
+}
+
+/// A network location. Even checking whether one exists makes Windows
+/// connect to it and offer the user's network credentials, so these are
+/// refused before anything touches them.
+pub fn is_network_path(raw: &str) -> bool {
+    let t = raw.trim().trim_matches('"');
+    t.starts_with("\\\\") || t.starts_with("//") || t.starts_with("\\/") || t.starts_with("/\\")
+}
+
+/// Refuse what Agent Desk must never open or read, before and after the
+/// path is made canonical (which expands 8.3 names like APPDAT~1 and
+/// removes doubled separators and "..").
+pub fn check_path(path: &Path) -> Result<PathBuf, String> {
+    if is_network_path(&path.to_string_lossy()) || !is_plain_local(path) {
+        return Err("Network and device paths are not opened.".into());
+    }
+    if path.components().any(|c| {
+        has_trailing_dot_or_space(&c.as_os_str().to_string_lossy())
+            && c.as_os_str() != "."
+            && c.as_os_str() != ".."
+    }) {
+        return Err(
+            "That name ends with a dot or a space, which Windows would read differently.".into(),
+        );
+    }
+    if is_off_limits(path) {
+        return Err(OFF_LIMITS.into());
+    }
+    let real =
+        std::fs::canonicalize(path).map_err(|_| format!("{} does not exist.", path.display()))?;
+    let shown = strip_verbatim(&real);
+    if !is_plain_local(&shown) || is_network_path(&shown.to_string_lossy()) {
+        return Err("Network and device paths are not opened.".into());
+    }
+    if is_off_limits(&shown) {
+        return Err(OFF_LIMITS.into());
+    }
+    Ok(shown)
+}
+
+const OFF_LIMITS: &str =
+    "That location holds private keys or app data, so Agent Desk does not open or read it.";
+
+/// Only ordinary drive paths (C:\...) and, off Windows, plain paths.
+fn is_plain_local(path: &Path) -> bool {
+    use std::path::{Component, Prefix};
+    match path.components().next() {
+        Some(Component::Prefix(p)) => matches!(p.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)),
+        _ => !cfg!(windows),
+    }
+}
+
+/// "\\?\C:\x" → "C:\x" (canonicalize adds the prefix on Windows).
+fn strip_verbatim(path: &Path) -> PathBuf {
+    let s = path.to_string_lossy();
+    match s.strip_prefix(r"\\?\") {
+        Some(rest) if !rest.starts_with("UNC") => PathBuf::from(rest),
+        _ => path.to_path_buf(),
+    }
 }
 
 /// What kind of file this is, for reading.
@@ -308,11 +365,104 @@ mod tests {
 
     #[test]
     fn programs_need_an_ok_to_open() {
-        assert!(runs_something(Path::new("setup.EXE")));
-        assert!(runs_something(Path::new("deploy.ps1")));
-        assert!(runs_something(Path::new("Shortcut.lnk")));
-        assert!(!runs_something(Path::new("report.docx")));
-        assert!(!runs_something(Path::new("Reports")));
+        for asks in [
+            "setup.EXE",
+            "deploy.ps1",
+            "Shortcut.lnk",
+            "setup.exe.",
+            "setup.exe ",
+            "x.pif",
+            "x.scf",
+            "help.chm",
+            "app.application",
+            "pkg.appinstaller",
+            "pkg.msix",
+            "pkg.appx",
+            "x.library-ms",
+            "x.search-ms",
+            "x.settingcontent-ms",
+            "work.rdp",
+            "macro.docm",
+            "macro.xlsm",
+            "disk.iso",
+            "disk.vhd",
+            "disk.vhdx",
+            "patch.msp",
+            "x.sct",
+            "x.wsc",
+            "mod.psm1",
+            "dark.theme",
+            "unknown.xyz",
+        ] {
+            assert!(needs_ok_to_open(Path::new(asks)), "{asks}");
+        }
+        for fine in [
+            "report.docx",
+            "notes.TXT",
+            "photo.jpg",
+            "deck.pptx",
+            "song.mp3",
+            "Reports",
+        ] {
+            assert!(!needs_ok_to_open(Path::new(fine)), "{fine}");
+        }
+    }
+
+    #[test]
+    fn network_and_device_paths_are_refused() {
+        for bad in [
+            r"\\fileserver\share\a.docx",
+            "//host/share",
+            r"\\host@SSL\DavWWWRoot\x",
+            r"\\?\UNC\host\s",
+            r"\\.\PhysicalDrive0",
+        ] {
+            assert!(is_network_path(bad), "{bad}");
+            assert!(check_path(Path::new(bad)).is_err(), "{bad}");
+        }
+        assert!(!is_network_path(r"C:\Users\sam\a.txt"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn checks_use_the_real_path() {
+        let dir = std::env::temp_dir().join(format!("agent-desk-path-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ok = dir.join("ok.txt");
+        std::fs::write(&ok, "x").unwrap();
+        // The temp folder itself is inside AppData, so even a doubled
+        // separator or a "..\" detour is caught once canonical.
+        let sneaky = PathBuf::from(format!(
+            "{}\\..\\{}\\ok.txt",
+            dir.display(),
+            dir.file_name().unwrap().to_string_lossy()
+        ));
+        assert!(check_path(&sneaky)
+            .unwrap_err()
+            .contains("private keys or app data"));
+        assert!(
+            check_path(&dir.join("ok.txt.")).is_err(),
+            "trailing dot refused"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn short_names_are_expanded_before_checking() {
+        // C:\Users\<me>\APPDAT~1 is AppData; canonical form reveals it.
+        let home = std::env::var("USERPROFILE").unwrap();
+        let short = PathBuf::from(format!("{home}\\APPDAT~1"));
+        if short.exists() {
+            assert!(check_path(&short).is_err());
+        }
+        let documents = PathBuf::from(format!("{home}\\Documents"));
+        if documents.exists() {
+            assert!(
+                check_path(&documents).is_ok(),
+                "ordinary folders still work"
+            );
+        }
     }
 
     #[test]

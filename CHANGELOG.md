@@ -10,6 +10,36 @@ the release workflow uses that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+### Security
+
+- Your data cannot leave unasked: once a file, folder or the clipboard has
+  been read in a conversation, every link asks before it opens, and so does
+  any link with a long query or fragment. Attaching a file always asks
+  (Teams uploads it straight away), and clicking Upload asks.
+- Codex can no longer run commands: its shell is switched off for every run,
+  so it cannot read files around Agent Desk's checks.
+- Opening files: only documents, pictures and media open without asking;
+  programs, scripts, shortcuts, macro documents, disk images and the like
+  ask. Names ending in a dot or space are refused, network paths
+  (`\server\share`, WebDAV) are refused before they are touched, and the
+  off-limits check runs on the real, canonical path (short names such as
+  `APPDAT~1` no longer slip past).
+- "Always allow" is narrower: per key combination, per file type, per
+  button; never offered for schedules, programs, attachments or links.
+- A lone carriage return now counts as Enter, other control characters
+  cannot be typed, and copying text with a line break asks.
+- More buttons ask first: Allow, Authorize, Grant, Agree, Yes, OK,
+  Continue, Upload, Commit, Join, Call, Update; and a click on an unnamed
+  spot of a screenshot asks.
+- Agent Desk refuses to click its own window, and nothing runs while a step
+  is waiting for your answer.
+- Scheduled tasks ask before every step, since nobody asked just then.
+- The local action server checks the key before reading a request, caps
+  request size and open connections, and its key comes from Windows'
+  system random generator. The file holding it is deleted on Quit.
+- A strict content security policy for the notch; the glow window can no
+  longer call any of the app's commands.
+
 ### Changed
 
 - The notch shows only "Listening" while you talk; the dot meter is gone.

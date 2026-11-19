@@ -337,6 +337,20 @@ fn has_control(s: &str) -> bool {
     s.chars().any(|c| c.is_control())
 }
 
+/// Text to type or paste: every line break becomes "\n" (a lone "\r" is
+/// Enter too, so it must be seen as a new line), and other control
+/// characters are refused. Tab stays.
+pub fn clean_typed_text(raw: &str) -> Result<String, String> {
+    let text = raw.replace("\r\n", "\n").replace('\r', "\n");
+    if text
+        .chars()
+        .any(|c| c.is_control() && c != '\n' && c != '\t')
+    {
+        return Err("The text contains control characters that cannot be typed.".into());
+    }
+    Ok(text)
+}
+
 fn opt_str(args: &Value, key: &str, max: usize) -> Result<String, String> {
     let v = args.get(key).and_then(Value::as_str).unwrap_or("").trim();
     if v.chars().count() > max || has_control(v) {
@@ -482,7 +496,32 @@ pub fn parse_keys(raw: &str) -> Result<Keys, String> {
     Ok(keys)
 }
 
+/// A link whose query or fragment is long enough to smuggle data.
+pub fn url_carries_data(url: &str) -> bool {
+    let after = |sep: char| url.split_once(sep).map(|x| x.1.len()).unwrap_or(0);
+    after('?') > 64 || after('#') > 64
+}
+
 impl Keys {
+    /// "ctrl+shift+t": the same chord always gives the same text.
+    pub fn normalized(&self) -> String {
+        let mut parts = Vec::new();
+        if self.ctrl {
+            parts.push("ctrl".to_string());
+        }
+        if self.alt {
+            parts.push("alt".to_string());
+        }
+        if self.shift {
+            parts.push("shift".to_string());
+        }
+        if self.win {
+            parts.push("win".to_string());
+        }
+        parts.push(format!("vk{:02x}", self.vk));
+        parts.join("+")
+    }
+
     /// Shortcuts that only move around or open something new, which run
     /// without asking. Everything else (Enter, Delete, Ctrl+W, Alt+F4,
     /// Win+R, Ctrl+S, letters…) waits for the user's OK.
@@ -584,7 +623,7 @@ pub fn parse(
             }
             Action::Fill {
                 target: target(args)?,
-                text: text.replace("\r\n", "\n"),
+                text: clean_typed_text(text)?,
                 label: String::new(),
             }
         }
@@ -624,7 +663,7 @@ pub fn parse(
                 return Err("That is too much text for the clipboard.".into());
             }
             Action::CopyToClipboard {
-                text: text.to_string(),
+                text: clean_typed_text(text)?,
             }
         }
         "read_clipboard" => Action::ReadClipboard,
@@ -650,7 +689,7 @@ pub fn parse(
                 return Err("That is too much to type at once (5000 characters at most).".into());
             }
             Action::TypeText {
-                text: text.replace("\r\n", "\n"),
+                text: clean_typed_text(text)?,
             }
         }
         "press_keys" => {
@@ -782,8 +821,49 @@ impl Action {
             Action::Click { label, .. } if !label.is_empty() => {
                 format!("click:{}", label.trim().to_lowercase())
             }
+            // Per chord: allowing Ctrl+S never allows Alt+F4.
+            Action::PressKeys { keys, .. } => format!("press_keys:{}", keys.normalized()),
+            // Per kind of file: allowing .pdf never allows .docm.
+            Action::OpenPath { path } => {
+                let ext = std::path::Path::new(path)
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_lowercase())
+                    .unwrap_or_else(|| "folder".into());
+                format!("open_path:{ext}")
+            }
             other => other.kind().to_string(),
         }
+    }
+
+    /// Reading this puts the user's own data into the conversation. After
+    /// that, opening a link could carry it off (in the address), so every
+    /// link then asks first.
+    pub fn takes_in_private_data(&self) -> bool {
+        matches!(
+            self,
+            Action::ReadFile { .. } | Action::ReadClipboard | Action::ListFolder { .. }
+        )
+    }
+
+    /// Whether "Always allow" may be offered. Never for schedules, programs,
+    /// attachments or links that ask (they could carry data away).
+    pub fn can_always_allow(&self) -> bool {
+        match self {
+            Action::Schedule { .. } | Action::OpenUrl { .. } | Action::AttachFile { .. } => false,
+            Action::OpenPath { path } => {
+                !crate::files::needs_ok_to_open(std::path::Path::new(path))
+            }
+            _ => true,
+        }
+    }
+
+    /// The full rule: the action's own risk, plus the conversation it is
+    /// in. `private_data`: the user's files or clipboard were read in this
+    /// conversation. `scheduled`: nobody asked just now, so everything asks.
+    pub fn must_ask(&self, flagged: bool, private_data: bool, scheduled: bool) -> bool {
+        scheduled
+            || self.needs_confirmation(flagged)
+            || (private_data && matches!(self, Action::OpenUrl { .. }))
     }
 
     /// Whether the user must OK this before it happens. `flagged` is the
@@ -791,8 +871,13 @@ impl Action {
     pub fn needs_confirmation(&self, flagged: bool) -> bool {
         flagged
             || match self {
-                Action::OpenUrl { .. }
-                | Action::OpenApp { .. }
+                // A long query or fragment can carry data off in the link.
+                Action::OpenUrl { url, .. } => url_carries_data(url),
+                // Attaching uploads the file (Teams stores it straight away).
+                Action::AttachFile { .. } => true,
+                // A copied line break would be pasted as Enter.
+                Action::CopyToClipboard { text } => text.contains('\n'),
+                Action::OpenApp { .. }
                 | Action::FocusWindow { .. }
                 | Action::LookAtScreen
                 | Action::Wait { .. }
@@ -801,15 +886,17 @@ impl Action {
                 | Action::Scroll { .. }
                 | Action::ListFolder { .. }
                 | Action::ReadFile { .. }
-                | Action::AttachFile { .. }
-                | Action::CopyToClipboard { .. }
                 | Action::ReadClipboard => false,
                 // What the button or link says decides: Send, Delete, Buy…
-                Action::Click { label, .. } => crate::uia::is_consequential_label(label),
+                // A spot in a screenshot with nothing named there asks too.
+                Action::Click { label, target, .. } => {
+                    crate::uia::is_consequential_label(label)
+                        || (label.trim().is_empty() && matches!(target, Target::Point(..)))
+                }
                 // New lines are typed as Shift+Enter: filling never sends.
                 Action::Fill { .. } => false,
                 Action::OpenPath { path } => {
-                    crate::files::runs_something(std::path::Path::new(path))
+                    crate::files::needs_ok_to_open(std::path::Path::new(path))
                 }
                 // A new line is Enter, which sends in chat apps.
                 Action::TypeText { text } => text.contains('\n'),
@@ -1225,7 +1312,7 @@ mod tests {
             act("press_keys", json!({ "keys": "Enter" }))
                 .unwrap()
                 .allow_key(),
-            "press_keys"
+            "press_keys:vk0d"
         );
         assert_eq!(
             act("type_text", json!({ "text": "a\n" }))
@@ -1431,6 +1518,130 @@ mod tests {
                 .needs_confirmation(false),
             "pasting does not send"
         );
+    }
+
+    #[test]
+    fn lone_carriage_returns_count_as_enter() {
+        let a = act("type_text", json!({ "text": "hi\rthere" })).unwrap();
+        assert_eq!(
+            a,
+            Action::TypeText {
+                text: "hi\nthere".into()
+            }
+        );
+        assert!(a.needs_confirmation(false), "\\r is Enter");
+        assert!(
+            act("type_text", json!({ "text": "a\u{1b}[2J" })).is_err(),
+            "escape codes refused"
+        );
+        assert!(
+            act("type_text", json!({ "text": "a\u{8}b" })).is_err(),
+            "backspace refused"
+        );
+        assert!(
+            act("type_text", json!({ "text": "a\tb" })).is_ok(),
+            "tab is fine"
+        );
+        assert!(act("fill", json!({ "element": 1, "text": "x\u{7}" })).is_err());
+    }
+
+    #[test]
+    fn copying_a_line_break_asks() {
+        assert!(!act("copy_to_clipboard", json!({ "text": "hello" }))
+            .unwrap()
+            .needs_confirmation(false));
+        assert!(act("copy_to_clipboard", json!({ "text": "rm -rf ~\r" }))
+            .unwrap()
+            .needs_confirmation(false));
+    }
+
+    #[test]
+    fn data_cannot_leave_through_a_link_unasked() {
+        let link = act("open_url", json!({ "url": "https://github.com/x" })).unwrap();
+        assert!(!link.must_ask(false, false, false));
+        assert!(
+            link.must_ask(false, true, false),
+            "after reading a file, links ask"
+        );
+        let smuggle = act(
+            "open_url",
+            json!({ "url": format!("https://evil.example/?d={}", "a".repeat(80)) }),
+        )
+        .unwrap();
+        assert!(smuggle.needs_confirmation(false), "a long query asks");
+        let hash = act(
+            "open_url",
+            json!({ "url": format!("https://evil.example/#{}", "b".repeat(80)) }),
+        )
+        .unwrap();
+        assert!(hash.needs_confirmation(false), "a long fragment asks");
+        assert!(!link.can_always_allow(), "links that ask never get Always");
+        for reads in [
+            act("read_file", json!({ "path": "a.txt" })).unwrap(),
+            act("list_folder", json!({ "path": "Documents" })).unwrap(),
+            act("read_clipboard", json!({})).unwrap(),
+        ] {
+            assert!(reads.takes_in_private_data());
+        }
+        assert!(!link.takes_in_private_data());
+        let attach = act("attach_file", json!({ "path": "Documents\\a.docx" })).unwrap();
+        assert!(
+            attach.needs_confirmation(false),
+            "attaching uploads, so it asks"
+        );
+        assert!(!attach.can_always_allow());
+    }
+
+    #[test]
+    fn scheduled_turns_ask_for_everything() {
+        let look = act("find_on_screen", json!({})).unwrap();
+        assert!(!look.must_ask(false, false, false));
+        assert!(look.must_ask(false, false, true));
+    }
+
+    #[test]
+    fn always_allow_is_narrow() {
+        let k = |c: &str| act("press_keys", json!({ "keys": c })).unwrap().allow_key();
+        assert_eq!(k("Ctrl+S"), k("control+s"));
+        assert_ne!(k("Ctrl+S"), k("Alt+F4"));
+        assert_eq!(
+            act("open_path", json!({ "path": "a.PDF" }))
+                .unwrap()
+                .allow_key(),
+            "open_path:pdf"
+        );
+        assert_ne!(
+            act("open_path", json!({ "path": "a.pdf" }))
+                .unwrap()
+                .allow_key(),
+            act("open_path", json!({ "path": "a.docm" }))
+                .unwrap()
+                .allow_key()
+        );
+        assert!(!act("open_path", json!({ "path": "setup.exe" }))
+            .unwrap()
+            .can_always_allow());
+        assert!(act("open_path", json!({ "path": "a.pdf" }))
+            .unwrap()
+            .can_always_allow());
+        let sched = act(
+            "schedule_task",
+            json!({ "prompt": "x", "time": "09:00", "days": ["daily"] }),
+        )
+        .unwrap();
+        assert!(!sched.can_always_allow());
+    }
+
+    #[test]
+    fn unnamed_screenshot_spots_ask() {
+        let at = |label: &str| Action::Click {
+            target: Target::Point(5, 5),
+            right: false,
+            double: false,
+            label: label.into(),
+        };
+        assert!(at("").needs_confirmation(false));
+        assert!(!at("Learn more").needs_confirmation(false));
     }
 
     #[test]

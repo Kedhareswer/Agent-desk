@@ -331,7 +331,7 @@ function onAction(p) {
     }
     const buttons = document.createElement("div");
     buttons.className = "act-buttons";
-    buttons.innerHTML = '<button class="primary" data-decision="allow">Allow</button><button data-decision="always">Always allow</button><button data-decision="deny">Don\'t</button>';
+    buttons.innerHTML = `<button class="primary" data-decision="allow">Allow</button>${p.always === false ? "" : '<button data-decision="always">Always allow</button>'}<button data-decision="deny">Don't</button>`;
     node.appendChild(buttons);
     state.asking = p.id;
     setPhase("confirm"); // the step itself is in the panel; the question stays on top
