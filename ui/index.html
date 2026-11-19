@@ -129,6 +129,46 @@
               <label class="switch"><input type="checkbox" name="autostart"><span>Start with Windows</span></label>
               <label class="switch"><input type="checkbox" name="auto_update"><span>Check for updates automatically</span></label>
             </section>
+            <section class="wide" id="actions-section">
+              <h3>Actions</h3>
+              <label class="switch"><input type="checkbox" name="actions_enabled"><span>Let Agent Desk act on this computer: open apps and pages, switch windows, type and press keys</span></label>
+              <small>Each step shows in the notch. Anything that sends, deletes, buys or runs a command waits for your OK. Never in live mode.</small>
+              <div class="sub">Always allowed</div>
+              <div id="allowed-list" class="chips"></div>
+              <div class="sub">Saved commands <small>The AI can run only these, by name, after you allow it.</small></div>
+              <div id="commands-list"></div>
+              <div><button type="button" id="add-command" class="small">Add command</button></div>
+            </section>
+            <section class="wide" id="schedules-section">
+              <h3>Schedules</h3>
+              <small>Say “every weekday at 9, open my calendar and summarise today” or “remind me at 5 to send the report”, or add one here. They run while Agent Desk is running.</small>
+              <div id="schedule-list"></div>
+              <div id="schedule-editor" hidden>
+                <label>Do this <textarea id="sched-prompt" rows="2" placeholder="Open my calendar and summarise today"></textarea></label>
+                <div class="two">
+                  <label>Name <input id="sched-name" placeholder="Optional"></label>
+                  <label>When
+                    <select id="sched-repeat">
+                      <option value="daily">Every day</option>
+                      <option value="weekdays">Weekdays</option>
+                      <option value="weekends">Weekends</option>
+                      <option value="custom">Chosen days</option>
+                      <option value="once">Once</option>
+                    </select>
+                  </label>
+                  <label>Time <input id="sched-time" type="time" value="09:00"></label>
+                  <label id="sched-date-label">Date <input id="sched-date" type="date"></label>
+                </div>
+                <div id="sched-days" class="days"></div>
+                <div id="sched-msg" hidden></div>
+                <div class="row">
+                  <span class="spacer"></span>
+                  <button type="button" id="sched-cancel">Cancel</button>
+                  <button type="button" id="sched-save" class="primary">Save schedule</button>
+                </div>
+              </div>
+              <div><button type="button" id="add-schedule" class="small">Add schedule</button></div>
+            </section>
             <details class="wide">
               <summary>Advanced</summary>
               <div class="two">

@@ -43,6 +43,14 @@ pub struct Settings {
     pub live_system_audio: bool,
     /// Look for new versions in the background (installer copies only).
     pub auto_update: bool,
+    /// Let the AI act on the computer (open apps and pages, type, press
+    /// keys, run saved commands, schedule tasks). Never in live mode.
+    pub actions_enabled: bool,
+    /// Action types the user chose "Always allow" for, e.g. "press_keys"
+    /// or "run_command:build site". These no longer ask first.
+    pub always_allow: Vec<String>,
+    /// Commands the user saved. The AI can run these by name, nothing else.
+    pub commands: Vec<crate::actions::SavedCommand>,
 }
 
 impl Default for Settings {
@@ -73,11 +81,19 @@ impl Default for Settings {
             live_shortcut: "Ctrl+Alt+L".into(),
             live_system_audio: true,
             auto_update: true,
+            actions_enabled: true,
+            always_allow: Vec::new(),
+            commands: Vec::new(),
         }
     }
 }
 
 impl Settings {
+    /// Whether this action may run without asking first.
+    pub fn always_allows(&self, key: &str) -> bool {
+        self.always_allow.iter().any(|k| k == key)
+    }
+
     pub fn load(dir: &PathBuf) -> Self {
         fs::read_to_string(dir.join("settings.json"))
             .ok()
@@ -89,5 +105,22 @@ impl Settings {
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
         fs::write(dir.join("settings.json"), json).map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_settings_files_get_the_new_fields() {
+        let old: Settings = serde_json::from_str(r#"{"provider":"codex"}"#).unwrap();
+        assert_eq!(old.provider, "codex");
+        assert!(old.actions_enabled);
+        assert!(old.always_allow.is_empty() && old.commands.is_empty());
+        let mut s = Settings::default();
+        s.always_allow.push("press_keys".into());
+        assert!(s.always_allows("press_keys"));
+        assert!(!s.always_allows("run_command:x"));
     }
 }

@@ -10,6 +10,24 @@ the release workflow uses that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+### Added
+
+- Agent Desk can now act on your computer: open web pages and apps, switch
+  windows, type, press shortcuts, run commands you saved, and look at the
+  screen again. Say "open Chrome and go to GitHub" and it does it. Every
+  step shows in the notch, and anything that sends, deletes, buys or runs
+  a command waits for your OK, with an "Always allow" option per type.
+- Schedules: "every weekday at 9, open my calendar and summarise today" or
+  "remind me at 5 to send the report". Manage them in Settings → Schedules.
+- Settings → Actions: turn actions off, undo "Always allow", and save
+  commands the AI may run by name.
+
+### Changed
+
+- Claude and Codex now get Agent Desk's own actions as tools (through a
+  local MCP server). They still get none of their own tools, and for Codex
+  your apps, plugins and MCP servers are switched off during these runs.
+
 ## [0.1.2] - 2026-11-19
 
 ### Added

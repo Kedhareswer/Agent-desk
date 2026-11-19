@@ -22,7 +22,11 @@ const fake = () => {
     claude_path: "", codex_path: "", keep_warm_minutes: 5,
     voice_model: "base.en", dock_edge: "top", dock_along: 0.5, opacity: 0.92, edge_glow: true,
     live_shortcut: "Ctrl+Alt+L", live_system_audio: true, auto_update: true,
+    actions_enabled: true, always_allow: ["press_keys"], commands: [],
   };
+  const view = (s) => ({ ...s, describe: s.when.kind === "once" ? `once, ${s.when.date} ${s.when.time}` : `at ${s.when.time}`, next: s.paused ? "" : "soon", last: "" });
+  let schedules = [{ id: 1, name: "Morning brief", prompt: "Open my calendar and summarise today", paused: false, last_run: null, created: 0,
+    when: { kind: "repeat", time: "09:00", days: [0, 1, 2, 3, 4] }, describe: "every weekday at 09:00", next: "Fri 20 Nov, 09:00", last: "" }];
   const emit = (name, payload) => (listeners[name] || []).forEach((fn) => fn({ payload }));
   window.__fake = { calls, emit, cliFound: true, failAsk: null, nextTurn: () => ++turn };
   // The real page can load before the app has finished starting, when every
@@ -36,6 +40,13 @@ const fake = () => {
         if (cmd === "get_settings") return settings;
         if (cmd === "save_settings") { settings = args.settings; return { settings, warning: null }; }
         if (cmd === "status") return { provider: settings.provider, cli_found: window.__fake.cliFound, detail: window.__fake.cliFound ? "C:/claude.exe" : "The `claude` command was not found.", hook_supported: true, voice_model_ready: true };
+        if (cmd === "list_schedules") return schedules;
+        if (cmd === "save_schedule") {
+          const item = { ...args.schedule, id: args.schedule.id || schedules.length + 1 };
+          schedules = schedules.filter((x) => x.id !== item.id).concat([view(item)]).sort((a, b) => a.id - b.id);
+          return schedules;
+        }
+        if (cmd === "delete_schedule") return (schedules = schedules.filter((x) => x.id !== args.id));
         if (cmd === "ask") {
           if (window.__fake.failAsk) throw window.__fake.failAsk;
           turn += 1;
@@ -219,6 +230,88 @@ assert.match(await page.textContent(".msg.error"), /not found/);
 await page.evaluate(() => (window.__fake.failAsk = null));
 await page.keyboard.press("Control+n");
 
+/* ----- acting on the computer ----- */
+
+// "Open Chrome and open GitHub": a harmless step is shown, then just runs.
+await wake(false);
+let actTurn = await page.evaluate(() => window.__fake.nextTurn());
+await emit("asked", { turn: actTurn, text: "open Chrome and open GitHub" });
+const step = (id, status) => emit("action", { id, turn: actTurn, kind: "open_url", summary: "Open github.com in Chrome", detail: "https://github.com", status, result: "" });
+await step(1, "running");
+assert.equal(await notch("state"), "acting");
+assert.equal(await page.textContent("#label"), "Working on it");
+assert.equal(await page.textContent(".msg.act .act-text"), "Open github.com in Chrome");
+assert.ok(await page.isVisible(".msg.act"), "the step shows in the notch before it runs");
+assert.equal(await page.locator(".act-buttons").count(), 0, "a harmless step does not ask");
+await step(1, "done");
+assert.equal(await page.textContent(".msg.act .act-status"), "Done");
+await emit("ai", { turn: actTurn, kind: "delta", text: "\n\nOpened GitHub in Chrome." });
+await emit("ai", { turn: actTurn, kind: "done", text: "" });
+assert.equal(await notch("state"), "done");
+const order = () => page.evaluate(() => [...document.querySelectorAll("#thread > .msg:not(.user)")].map((n) => n.className));
+assert.deepEqual(await order(), ["msg act", "msg ai"], "the step comes before the answer");
+await page.waitForFunction(() => document.querySelector(".msg.ai").textContent === "Opened GitHub in Chrome.");
+assert.deepEqual(await calls("answer_action"), []);
+await snap("10-acted");
+
+// A step that sends something waits for a one-tap OK and shows exactly what will happen.
+actTurn = await page.evaluate(() => window.__fake.nextTurn());
+await emit("asked", { turn: actTurn, text: "tell Sam I'm running late" });
+await emit("ai", { turn: actTurn, kind: "delta", text: "I'll type it into the chat." });
+const send = { id: 2, turn: actTurn, kind: "type_text", summary: "Type “Running late, sorry” and press Enter", detail: "Running late, sorry\n", result: "" };
+await emit("action", { ...send, status: "ask" });
+assert.equal(await notch("state"), "confirm");
+assert.equal(await page.textContent("#label"), "Needs your OK");
+assert.equal(await page.textContent(".msg.act[data-status=ask] .act-detail"), "Running late, sorry\n");
+assert.deepEqual(await page.locator(".act-buttons button").allTextContents(), ["Allow", "Always allow", "Don't"]);
+// Text written before the step stays above it.
+assert.deepEqual((await order()).slice(-3), ["msg ai", "msg act", "msg ai"]);
+assert.equal(await page.textContent(".msg.act[data-id='2'] + .msg.ai, .msg.ai:has(+ .msg.act[data-id='2'])"), "I'll type it into the chat.");
+assert.ok(await page.isVisible(".msg.ai:has(+ .msg.act[data-id='2'])"), "text written before the step is shown");
+assert.equal(await page.textContent("#top-line"), "tell Sam I'm running late", "the question stays on top");
+await snap("11-confirm");
+await page.click(".act-buttons button[data-decision=allow]");
+assert.deepEqual((await calls("answer_action")).at(-1), { id: 2, decision: "allow" });
+assert.equal(await page.locator(".act-buttons").count(), 0, "answered once");
+await emit("action", { ...send, status: "running" });
+await emit("action", { ...send, status: "done" });
+assert.equal(await page.textContent(".msg.act[data-id='2'] .act-status"), "Done");
+
+// Escape refuses a waiting step (without stopping the answer); Enter allows.
+const stopsBefore = (await calls("stop")).length;
+await emit("action", { ...send, id: 3, status: "ask" });
+await page.keyboard.press("Escape");
+assert.deepEqual((await calls("answer_action")).at(-1), { id: 3, decision: "deny" });
+assert.equal((await calls("stop")).length, stopsBefore, "Escape on a question does not stop the answer");
+await emit("action", { ...send, id: 3, status: "denied" });
+assert.equal(await page.textContent(".msg.act[data-id='3'] .act-status"), "Not done");
+await emit("action", { ...send, id: 4, kind: "run_command", summary: "Run “Build site”", detail: "npm run build", status: "ask" });
+await page.keyboard.press("Enter");
+assert.deepEqual((await calls("answer_action")).at(-1), { id: 4, decision: "allow" });
+// "Always allow" is passed on; the app remembers it.
+await emit("action", { ...send, id: 5, status: "ask" });
+await page.click(".act-buttons button[data-decision=always]");
+assert.deepEqual((await calls("answer_action")).at(-1), { id: 5, decision: "always" });
+// A failed step says why.
+await emit("action", { ...send, id: 6, kind: "open_app", summary: "Open Photoshop", detail: "", status: "failed", result: "There is no app called \"Photoshop\" in the Start menu." });
+assert.match(await page.textContent(".msg.act[data-id='6'] .act-status"), /no app called/);
+// Stop takes away a pending question.
+await emit("action", { ...send, id: 7, status: "ask" });
+await page.click("#stop");
+assert.equal(await page.locator(".act-buttons").count(), 0);
+// Steps from an old turn are ignored.
+await emit("action", { ...send, id: 8, turn: 1, status: "ask" });
+assert.equal(await page.locator(".msg.act[data-id='8']").count(), 0);
+
+// A scheduled task starts a conversation of its own.
+const schedTurn = await page.evaluate(() => window.__fake.nextTurn());
+await emit("asked", { turn: schedTurn, text: "Scheduled: Morning brief", quiet: false, scheduled: true });
+assert.equal(await page.locator(".msg.act").count(), 0, "the old conversation is cleared");
+assert.equal(await page.textContent("#top-line"), "Scheduled: Morning brief");
+await emit("ai", { turn: schedTurn, kind: "delta", text: "You have two meetings today." });
+await emit("ai", { turn: schedTurn, kind: "done", text: "" });
+await page.keyboard.press("Control+n");
+
 /* ----- live mode: "work with me" ----- */
 
 await emit("live", true);
@@ -281,6 +374,53 @@ await wake(true);
 await page.keyboard.press("Control+,");
 await page.waitForSelector("#settings:not([hidden])");
 await snap("6-settings");
+
+// Actions: on by default, "always allow" can be undone, commands are saved.
+assert.ok(await page.isChecked('[name="actions_enabled"]'));
+assert.equal(await page.textContent("#allowed-list .chip"), "Pressing keys\u00d7");
+await page.click("#allowed-list .chip button");
+assert.match(await page.textContent("#allowed-list"), /Every risky step asks first/);
+await page.click("#add-command");
+await page.fill(".cmd-row .cmd-name", "Build site");
+await page.keyboard.press("Enter"); // must not submit the settings
+assert.ok(await page.isVisible("#settings"));
+await page.fill(".cmd-row .cmd-command", "npm run build");
+
+// Schedules show when they run next, and can be paused, added and deleted.
+await page.waitForSelector(".sched-row");
+assert.match(await page.textContent(".sched-row .what"), /Morning brief/);
+assert.match(await page.textContent(".sched-row .when"), /every weekday at 09:00 · Next: Fri 20 Nov, 09:00/);
+await page.click(".sched-row button:text('Pause')");
+assert.equal((await calls("save_schedule")).at(-1).schedule.paused, true);
+assert.equal((await calls("save_schedule")).at(-1).schedule.describe, undefined, "only the schedule itself is sent");
+await page.waitForSelector(".sched-row.paused");
+await page.click("#add-schedule");
+await page.fill("#sched-prompt", "Remind me to send the report");
+await page.selectOption("#sched-repeat", "once");
+assert.ok(await page.isVisible("#sched-date"));
+await page.fill("#sched-time", "17:00");
+await page.fill("#sched-date", "2026-11-19");
+await snap("12-schedule-editor");
+await page.click("#sched-save");
+const added = (await calls("save_schedule")).at(-1).schedule;
+assert.deepEqual([added.id, added.prompt, added.when], [0, "Remind me to send the report", { kind: "once", date: "2026-11-19", time: "17:00" }]);
+await page.waitForSelector("#schedule-editor", { state: "hidden" });
+assert.equal(await page.locator(".sched-row").count(), 2);
+await page.click("#add-schedule");
+await page.fill("#sched-prompt", "Stand-up notes");
+await page.selectOption("#sched-repeat", "custom");
+await page.click("#sched-save");
+assert.match(await page.textContent("#sched-msg"), /at least one day/);
+await page.check("#sched-days input[value='0']");
+await page.check("#sched-days input[value='2']");
+await page.click("#sched-save");
+assert.deepEqual((await calls("save_schedule")).at(-1).schedule.when, { kind: "repeat", time: "09:00", days: [0, 2] });
+await page.waitForSelector("#schedule-editor", { state: "hidden" });
+await page.click(".sched-row:last-child button:text('Delete')");
+assert.deepEqual((await calls("delete_schedule")).at(-1), { id: 3 });
+await page.waitForFunction(() => document.querySelectorAll(".sched-row").length === 2);
+await page.locator("#schedules-section").scrollIntoViewIfNeeded();
+await snap("13-schedules");
 await page.focus("#shortcut-input");
 await page.keyboard.press("Control+Shift+KeyK");
 assert.equal(await page.inputValue("#shortcut-input"), "Ctrl+Shift+K");
@@ -310,6 +450,9 @@ assert.equal(saved.opacity, 0.5);
 assert.equal(saved.hide_from_capture, false);
 assert.equal(saved.auto_update, false);
 assert.equal(saved.keep_warm_minutes, 5);
+assert.equal(saved.actions_enabled, true);
+assert.deepEqual(saved.always_allow, []);
+assert.deepEqual(saved.commands, [{ name: "Build site", command: "npm run build" }]);
 assert.equal(await page.getAttribute("#shell", "data-edge"), "bottom");
 
 // Messages from the app (such as update results) appear in the notch.

@@ -1,13 +1,17 @@
 // Agent Desk: a small always-available AI overlay for the desktop.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod actions;
 mod audio;
 mod backend;
 mod dock;
 mod hotkey;
+mod mcp;
 mod platform;
+mod schedule;
 mod settings;
 mod stt;
+mod tasks;
 mod update;
 
 use backend::{AiEvent, Ask, Engine};
@@ -16,6 +20,7 @@ use hotkey::Gesture;
 use serde::Serialize;
 use settings::Settings;
 use std::{
+    collections::HashMap,
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
@@ -38,7 +43,7 @@ const NOTCH_HEIGHT: f64 = 58.0;
 const MAX_WIDTH: f64 = 640.0;
 const MAX_HEIGHT: f64 = 640.0;
 /// Long edge of the screenshot sent to the model.
-const SHOT_MAX_EDGE: u32 = 1568;
+pub(crate) const SHOT_MAX_EDGE: u32 = 1568;
 /// Holding the wake keys for less than this is a tap (open to type);
 /// longer is speech.
 const TAP_MS: u64 = 280;
@@ -76,6 +81,12 @@ struct Screen {
 
 struct App {
     dir: PathBuf,
+    /// Actions waiting for the user's OK, by action id.
+    pending: Mutex<HashMap<u64, std::sync::mpsc::Sender<tasks::Decision>>>,
+    action_ids: AtomicU64,
+    /// Where typing and key presses go; 0 means "the window in front".
+    target: Mutex<isize>,
+    schedules: Mutex<Vec<schedule::Schedule>>,
     settings: Mutex<Settings>,
     engine: Engine,
     speech: stt::Transcriber,
@@ -129,6 +140,8 @@ struct Asked {
     text: String,
     /// A live-mode check-in: show the answer only if there is one.
     quiet: bool,
+    /// A scheduled task: it starts a fresh conversation.
+    scheduled: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -340,9 +353,13 @@ fn show_overlay(app: &AppHandle, typing: bool, info: Option<WakeInfo>) {
         let state = app2.state::<App>();
         let live = is_live(&app2);
         let s = state.settings.lock().unwrap().clone();
-        state
-            .engine
-            .prewarm(&s.provider, &s.claude_model, &s.claude_path, live);
+        state.engine.prewarm(
+            &s.provider,
+            &s.claude_model,
+            &s.claude_path,
+            live,
+            s.actions_enabled,
+        );
     });
 }
 
@@ -409,9 +426,20 @@ fn send_question(app: &AppHandle, prompt: &str, with_screen: bool) -> Result<u64
         None
     };
 
+    let live = is_live(app);
+    let tools = s.actions_enabled && !live;
+    // A new request may act on the window the user came from.
+    *state.target.lock().unwrap() = 0;
     let mut text = String::new();
     if !title.is_empty() || !process.is_empty() {
         text.push_str(&format!("[Active window: {title} ({process})]\n"));
+    }
+    if tools {
+        // Needed to schedule "at 5" or "tomorrow" correctly.
+        text.push_str(&format!(
+            "[Local time: {}]\n",
+            schedule::format_stamp(platform::local_stamp())
+        ));
     }
     if jpeg.is_some() {
         text.push_str("[A screenshot of my screen is attached.]\n");
@@ -431,7 +459,8 @@ fn send_question(app: &AppHandle, prompt: &str, with_screen: bool) -> Result<u64
         claude_path: s.claude_path,
         codex_model: s.codex_model,
         codex_path: s.codex_path,
-        live: is_live(app),
+        live,
+        tools,
     })
 }
 
@@ -555,6 +584,7 @@ fn talk_end(app: &AppHandle, held_ms: u64) {
                 turn,
                 text,
                 quiet: false,
+                scheduled: false,
             },
         );
         Ok(turn)
@@ -713,6 +743,7 @@ fn live_start(app: &AppHandle) {
                             turn,
                             text: shown,
                             quiet: true,
+                            scheduled: false,
                         },
                     );
                 }
@@ -758,6 +789,7 @@ fn send_live(app: &AppHandle, lines: &[String], with_shot: bool) -> Result<u64, 
         codex_model: s.codex_model,
         codex_path: s.codex_path,
         live: true,
+        tools: false,
     })
 }
 
@@ -892,17 +924,23 @@ fn ask(app: AppHandle, prompt: String, with_screen: bool) -> Result<u64, String>
 
 #[tauri::command(async)]
 fn stop(state: State<App>) {
+    tasks::deny_all(&state);
     state.engine.stop();
 }
 
 #[tauri::command(async)]
 fn new_chat(app: AppHandle, state: State<App>) {
     let live = is_live(&app);
+    tasks::deny_all(&state);
     state.engine.new_chat();
     let s = state.settings.lock().unwrap().clone();
-    state
-        .engine
-        .prewarm(&s.provider, &s.claude_model, &s.claude_path, live);
+    state.engine.prewarm(
+        &s.provider,
+        &s.claude_model,
+        &s.claude_path,
+        live,
+        s.actions_enabled,
+    );
 }
 
 #[tauri::command]
@@ -1100,6 +1138,7 @@ fn build_tray(app: &AppHandle, hide_from_capture: bool) -> tauri::Result<()> {
                 std::thread::spawn(move || update_clicked(&app));
             }
             "quit" => {
+                tasks::deny_all(&app.state::<App>());
                 app.state::<App>().engine.stop();
                 app.exit(0);
             }
@@ -1201,7 +1240,12 @@ fn main() {
             resize,
             focus,
             copy_text,
-            insert_text
+            insert_text,
+            tasks::answer_action,
+            tasks::list_schedules,
+            tasks::save_schedule,
+            tasks::delete_schedule,
+            tasks::run_schedule_now
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -1214,6 +1258,10 @@ fn main() {
                 let _ = emitter.emit_to("main", "ai", event);
             });
             app.manage(App {
+                pending: Mutex::new(HashMap::new()),
+                action_ids: AtomicU64::new(0),
+                target: Mutex::new(0),
+                schedules: Mutex::new(schedule::load(&dir)),
                 engine: Engine::new(dir.clone(), emit),
                 speech: stt::Transcriber::default(),
                 model_download: Mutex::new(()),
@@ -1239,6 +1287,8 @@ fn main() {
 
             build_tray(&handle, settings.hide_from_capture)?;
             watch_for_updates(handle.clone());
+            tasks::start_server(&handle);
+            tasks::watch_schedules(handle.clone());
 
             // Gestures arrive on the keyboard hook thread, which must return
             // at once, so the work moves to its own thread.
@@ -1265,7 +1315,10 @@ fn main() {
                         let state = events_app.state::<App>();
                         let just_shown =
                             state.shown_at.lock().unwrap().elapsed() < Duration::from_millis(400);
-                        if state.settings.lock().unwrap().hide_on_blur && !just_shown {
+                        // Acting moves focus to other apps; that is not the
+                        // user clicking away.
+                        let working = state.engine.is_busy();
+                        if state.settings.lock().unwrap().hide_on_blur && !just_shown && !working {
                             hide_overlay(&events_app);
                         }
                     }

@@ -47,6 +47,8 @@ The answer appears in a small notch at the edge of your screen.
 | 🎙️ **Hold to talk** | Hold <kbd>Ctrl</kbd> + <kbd>Alt</kbd>, speak, release. No Enter key. |
 | ⌨️ **Tap to type** | A quick tap opens the same notch with a text box. |
 | 🤝 **Work with me (live mode)** | <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>L</kbd> follows a call or a session and speaks up only when it can help, for example when someone asks a question. |
+| 🖱️ **Does things for you** | "Open Chrome and go to GitHub", "switch to Outlook", "type my address". Every step shows in the notch; anything that sends, deletes, buys or runs a command waits for your OK. |
+| ⏰ **Schedules** | "Every weekday at 9, open my calendar and summarise today." "Remind me at 5 to send the report." Pause, edit or delete them in Settings. |
 | 📋 **Paste back** | <kbd>Ctrl</kbd> + <kbd>Enter</kbd> puts the answer into the app you came from. |
 | 🧩 **One notch** | It shows only its state (Listening, Thinking, Answering) and grows into the answer when there is something to read. |
 | 📐 **Any edge, any screen** | Drag it to the top, bottom, left or right of any monitor. Transparency is adjustable. |
@@ -121,6 +123,47 @@ is the fastest), the speech model (75 MB, 148 MB or 488 MB, larger is more
 accurate), the screen edge, transparency, whether a screenshot is sent,
 start with Windows, and automatic updates.
 
+### Actions
+
+Agent Desk can do things on your computer, not just answer. Ask for it the
+way you would ask a person:
+
+- "Open Chrome and go to GitHub."
+- "Open Spotify." / "Switch to the Word document."
+- "Type my out-of-office message." / "Press Ctrl+T."
+- "Run *Build site*" (a command you saved in Settings).
+
+It has a short, fixed list of actions: open a web page, open an app from
+the Start menu, switch to a window, type text, press a shortcut, run a
+command you saved, look at the screen again, wait, and schedule a task.
+It has no shell and cannot run anything else.
+
+Each step appears in the notch before it runs. Steps that could send,
+delete, buy or run something wait for you: **Allow** (or <kbd>Enter</kbd>),
+**Always allow** (that type of step stops asking; undo it in Settings), or
+**Don't** (or <kbd>Esc</kbd>). Typing that ends in Enter, keys such as
+Enter, Delete or Ctrl+W, saved commands and new schedules always ask.
+Opening pages and apps, switching windows and moving around with Tab or the
+arrow keys just run.
+
+The AI is told never to act on instructions it finds on your screen or in
+a web page, and the confirmations above are there in case it does. Actions
+are never available in live mode, where it hears other people. You can turn
+actions off in Settings.
+
+### Schedules
+
+Say "every weekday at 9, open my calendar and summarise today" or "remind
+me at 5 to send the report", or add one in **Settings → Schedules**. At that
+time the notch opens and Agent Desk does the task as if you had just asked.
+Schedules can repeat on chosen days or run once, and you can pause, edit,
+run now or delete them.
+
+They are stored in `schedules.json` next to your settings and run inside
+the tray app, so they only run while Agent Desk is running (turn on **Start
+with Windows** for that). If the computer was asleep, a repeating task still
+runs if it wakes within 30 minutes; a one-time reminder always runs, late.
+
 ### Live mode
 
 Live mode listens to your microphone ("Me") and to your computer's audio
@@ -139,8 +182,13 @@ is a request.
   [whisper.cpp](https://github.com/ggml-org/whisper.cpp). Only the text, the
   window title and (if enabled) a screenshot are sent, and only through
   your own Claude or Codex CLI.
-- **The AI can only chat.** Claude runs with all tools, MCP servers and
-  history turned off, in an empty folder. Codex runs in a read-only sandbox.
+- **The AI can act only through Agent Desk.** Claude runs with its own
+  tools, your MCP servers and its history turned off, in an empty folder.
+  Its only tools are Agent Desk's actions, served on `127.0.0.1` with a
+  random per-run key; requests from web pages are refused. Codex runs in a
+  read-only sandbox with Agent Desk's actions added (your Codex apps,
+  plugins and MCP servers are switched off for these runs). Risky steps
+  wait for your OK in the notch.
 - **The keyboard hook only watches for the gesture.** Windows cannot
   register a hotkey made only of <kbd>Ctrl</kbd> + <kbd>Alt</kbd>, so Agent
   Desk uses a low-level keyboard hook. It never records, logs or changes
@@ -174,12 +222,16 @@ Found a security problem? Please report it privately (see
 | --- | --- |
 | Tray, windows, commands, push-to-talk and live mode | [`src-tauri/src/main.rs`](src-tauri/src/main.rs) |
 | Claude and Codex CLI bridge | [`src-tauri/src/backend.rs`](src-tauri/src/backend.rs) |
+| The allowed actions and their rules | [`src-tauri/src/actions.rs`](src-tauri/src/actions.rs) |
+| Local MCP server the CLIs call actions through | [`src-tauri/src/mcp.rs`](src-tauri/src/mcp.rs) |
+| Carrying out actions, confirmations, running schedules | [`src-tauri/src/tasks.rs`](src-tauri/src/tasks.rs) |
+| Schedule times and storage | [`src-tauri/src/schedule.rs`](src-tauri/src/schedule.rs) |
 | Hold, tap and shortcut detection | [`src-tauri/src/hotkey.rs`](src-tauri/src/hotkey.rs) |
 | Microphone and system audio | [`src-tauri/src/audio.rs`](src-tauri/src/audio.rs) |
 | Speech to text | [`src-tauri/src/stt.rs`](src-tauri/src/stt.rs) |
 | Updates | [`src-tauri/src/update.rs`](src-tauri/src/update.rs) |
 | Docking to a screen edge | [`src-tauri/src/dock.rs`](src-tauri/src/dock.rs) |
-| Screenshot, foreground window, paste | [`src-tauri/src/platform.rs`](src-tauri/src/platform.rs) |
+| Screenshot, windows, paste, typing, opening apps | [`src-tauri/src/platform.rs`](src-tauri/src/platform.rs) |
 | The notch interface | [`ui/`](ui) |
 
 [CLAUDE.md](CLAUDE.md) describes the architecture and design rules in
@@ -192,6 +244,8 @@ detail.
 | "The `claude` command was not found" | Install Claude Code and run `claude` once to sign in, or set its path in Settings. |
 | It says "Downloading speech model" | This happens once, the first time you talk. Wait for 100%. |
 | Holding <kbd>Ctrl</kbd> + <kbd>Alt</kbd> does nothing | Check that Agent Desk is in the tray. Another app may use the same keys; set your own shortcut in Settings. |
+| "There is no app called … in the Start menu" | Use the name shown in the Start menu, or ask it to open the website instead. |
+| A schedule did not run | Agent Desk must be running at that time. Check **Start with Windows**, and that the schedule is not paused. |
 | "I didn't hear anything" | Check the microphone in Windows Settings → Privacy → Microphone, and hold the keys while you speak. |
 | SmartScreen warns about the installer | Choose **More info → Run anyway**. The app is not code signed yet. |
 

@@ -12,7 +12,10 @@ go; a black **notch** on the edge of the screen shows what it is doing and
 grows into the answer. It answers through the user's **existing Claude or
 ChatGPT subscription** by driving the `claude` (Claude Code) or `codex`
 (OpenAI Codex) command-line tool they are already signed in to. There is no
-API key and no server of our own.
+API key and no server of our own. It can also **act on the desktop** (open
+pages and apps, switch windows, type, press keys, run saved commands) and
+**run scheduled tasks**, through a small fixed set of actions that the user
+sees, and confirms when they are risky.
 
 Core promises, in priority order. Do not trade one away without the user
 asking:
@@ -38,6 +41,8 @@ asking:
 | Type | Tap Ctrl + Alt (held < 280 ms) | Notch takes focus with a text field. |
 | Work with me (live) | Ctrl + Alt + L or tray | Listens continuously to the microphone ("Me") and the computer's audio ("Them"), cuts speech at pauses, transcribes, and sends each batch with a screenshot at most every 15 s. The AI replies with a single "." when it has nothing useful; the UI shows nothing for those. |
 | Insert | Ctrl + Alt + Enter (registered while visible) or Ctrl + Enter in the notch | Pastes the last answer into the app the user came from. |
+| Act | Any request in push to talk or type mode | The AI may call Agent Desk's actions. Each step shows in the notch; risky ones wait for Allow / Always allow / Don't (Enter / Esc). Never in live mode. |
+| Scheduled | A schedule's time comes (tray process checks every 20 s) | Starts a fresh conversation with the schedule's prompt, as if the user asked, and shows it in the notch. |
 
 ## Layout
 
@@ -46,14 +51,26 @@ src-tauri/                  Rust (Tauri 2) – all system work
   src/main.rs               App state, windows, tray, commands, push-to-talk
                             flow, live-mode loop, settings application
   src/backend.rs            Claude/Codex CLI bridge, system prompts
-                            (SYSTEM_PROMPT, LIVE_PROMPT), stream parsing
+                            (SYSTEM_PROMPT, ACTIONS_PROMPT, LIVE_PROMPT),
+                            MCP config for each CLI, stream parsing
+  src/actions.rs            Pure: the allowed actions, argument checks,
+                            which ones need confirmation, tool definitions,
+                            Start-menu and window matching
+  src/mcp.rs                Minimal MCP server (HTTP on 127.0.0.1, bearer
+                            token, no Origin) the CLIs call actions through
+  src/tasks.rs              Runs actions with the notch in the loop
+                            (show, confirm, execute), and the schedule loop
+  src/schedule.rs           Pure: schedule times (local minute stamps),
+                            due/next-run logic, schedules.json storage
   src/hotkey.rs             Low-level keyboard hook (Windows) + pure gesture
                             state machine (Down / Up(ms) / Cancel / Tap)
   src/audio.rs              Microphone recording, continuous Listener
                             (mic or system loopback), Segmenter, resampling
   src/stt.rs                whisper.cpp transcription, model download
   src/platform.rs           Win32: foreground window, monitor screenshot,
-                            force-foreground, paste (Ctrl+V via SendInput)
+                            force-foreground, paste (Ctrl+V via SendInput),
+                            ShellExecute, window list, typing and key
+                            chords (SendInput), local time, saved commands
   src/dock.rs               Pure maths for docking to a screen edge
   src/settings.rs           Settings struct, JSON in the app config dir
   src/update.rs             In-app updater (installer copies only), channel
@@ -84,13 +101,19 @@ bucket/agent-desk.json      Scoop manifest, written by the release workflow
 
 - **UI → Rust:** `invoke(...)` commands in `main.rs`: `get_settings`,
   `save_settings`, `status`, `ask`, `stop`, `new_chat`, `hide`, `resize`,
-  `focus`, `copy_text`, `insert_text`.
+  `focus`, `copy_text`, `insert_text`, `answer_action`, `list_schedules`,
+  `save_schedule`, `delete_schedule`, `run_schedule_now`.
 - **Rust → UI:** events emitted to the `main` window:
   - `ai` `{turn, kind: delta|done|error, text}` answer stream
   - `phase` `{phase: listening|transcribing|preparing|cancelled|error, text}`
-  - `asked` `{turn, text, quiet}` a question the app sent itself (speech or
-    live mode). `quiet: true` means live check-in: show nothing unless the
-    answer is more than "."
+  - `asked` `{turn, text, quiet, scheduled}` a question the app sent itself
+    (speech, live mode or a schedule). `quiet: true` means live check-in:
+    show nothing unless the answer is more than ".". `scheduled: true`
+    clears the thread first.
+  - `action` `{id, turn, kind, summary, detail, status, result}` one desktop
+    step; `status` is `ask` (show Allow / Always allow / Don't), `running`,
+    `done`, `denied` or `failed`. Same turn rules as `ai`.
+  - `schedules-changed` reload the list if Settings is open.
   - `wake` `{title, process, has_screen, typing}`, `refocus`, `level`
     (0–1 loudness), `live` (bool), `live-heard` `{who, text}`, `live-note`,
     `insert-request`, `open-settings`, `settings-changed`.
@@ -106,14 +129,74 @@ bucket/agent-desk.json      Scoop manifest, written by the release workflow
   `claude -p --input-format stream-json --output-format stream-json
   --include-partial-messages --tools "" --strict-mcp-config
   --disable-slash-commands --no-session-persistence --system-prompt-file …`
-  in an empty `workspace` folder. It must only chat: no tools, no MCP, no
-  project files, nothing written to the user's history.
-- The process key is `model|path|live`; changing any of these starts a new
-  process. Normal and live mode are separate conversations.
+  in an empty `workspace` folder. No built-in tools (no files, shell or
+  web), none of the user's MCP servers, no project files, nothing written
+  to the user's history.
+- **The only tools are Agent Desk's own actions**, and only when
+  `actions_enabled` is on and not in live mode. Claude then also gets
+  `--mcp-config <config>/mcp.json --allowedTools mcp__agentdesk`, and the
+  system prompt gets `ACTIONS_PROMPT`. Never add `Bash`, `Read`, `WebFetch`
+  or another server, and never give the AI a free-form shell.
+- The process key is `model|path|live|tools`; changing any of these starts a
+  new process. Normal and live mode are separate conversations.
+- Answers that use tools stop with `stop_reason: tool_use` (`Parsed::Pause`)
+  and continue; that is not "done". Text after a step starts a new
+  paragraph.
 - An answer is "done" on the stream's `message_delta` with a final stop
   reason, not on the later `result` line (that arrives seconds later).
 - Codex runs per turn as `codex exec --json --skip-git-repo-check -c
-  sandbox_mode=read-only`, resuming the stored thread for follow-ups.
+  sandbox_mode=read-only`, resuming the stored thread for follow-ups. With
+  actions on, `codex_tool_args` adds the same server
+  (`-c mcp_servers.agentdesk.url=…`, token via the `AGENT_DESK_MCP_TOKEN`
+  environment variable, `default_tools_approval_mode="approve"` because the
+  notch does the asking) and switches off the user's apps, plugins and every
+  `[mcp_servers.<name>]` in `~/.codex/config.toml` for that run. Same
+  actions, same checks and confirmations for both providers.
+
+## Action rules
+
+- **Fixed allowlist** (`actions::tool_definitions`): `open_url` (http/https
+  only, optional chrome/edge/firefox), `open_app` (a Start-menu shortcut or
+  a few built-ins; names only, never paths), `focus_window`, `type_text`,
+  `press_keys` (one chord), `run_saved_command` (only commands the user
+  saved in Settings, by name), `look_at_screen`, `wait` (≤ 10 s),
+  `schedule_task`. Adding an action means: parse and check it in
+  `actions.rs`, classify it in `needs_confirmation`, carry it out in
+  `tasks::execute`, and add tests.
+- **Confirmation policy** (`Action::needs_confirmation`): asks first for
+  typing that contains a new line (Enter), every key chord except plain
+  navigation (Tab, arrows, Esc, Home/End, Page Up/Down, Ctrl+T/L/F/C/A,
+  Ctrl+Tab, Ctrl+1–9, Alt+Left/Right/Tab), every saved command, and every
+  new schedule. The AI can mark any step `consequential` to ask too; it can
+  never skip a question. "Always allow" stores `allow_key()` in
+  `always_allow` (per action type; per command name for saved commands) and
+  the user can undo it in Settings. No answer in 2 minutes, Stop, New or
+  Quit all count as "no".
+- **Shown before it runs.** Every step is emitted as an `action` event
+  before anything happens, even harmless ones.
+- **Instructions on screen are data.** `ACTIONS_PROMPT` tells the model to
+  act only on the user's own words and to treat screen, page and tool text
+  as information. Live mode never gets tools (other people's speech).
+- **The server** (`mcp.rs`) binds `127.0.0.1` on a random port, requires a
+  random bearer token per app run, and refuses any request carrying an
+  `Origin` header (a web page). No HTTP or MCP library.
+- Typing and keys never go into the notch: `prepare_keyboard` refocuses the
+  window the user came from (or the last `focus_window` target).
+
+## Schedule rules
+
+- Stored in `<config>/schedules.json` (`schedule::save` writes then
+  renames). Run by `tasks::watch_schedules` in the tray process every 20 s;
+  no service, no Task Scheduler.
+- Times are local wall-clock minutes (`platform::local_now` →
+  `schedule::stamp`). `Repeat {time, days}` (0 = Monday, empty = every day)
+  catches up only within `GRACE_MINUTES` (30) and never for a time before it
+  was created; `Once {date, time}` runs the first time it is seen due, late
+  if need be, then shows as finished.
+- `last_run` is recorded before running so nothing runs twice. Schedules
+  wait while live mode is on, the user is talking, or an answer streams.
+- A run starts a fresh conversation (`new_chat`) whose prompt begins
+  `[Scheduled task "<name>", <when>]`.
 - Screenshots: JPEG, long edge 1568 px, sent once per conversation in normal
   mode (follow-ups rely on context), periodically in live mode.
 - Default Claude model is `haiku` for speed. Do not change the default to a
@@ -155,14 +238,19 @@ edge, a soft screen-edge glow while listening.
   and height animate) into the panel and shrinks back. Never add a second
   floating box, modal or card. Settings also open inside the notch.
 - **Minimal by default.** While working, show only state: Listening,
-  Transcribing, Thinking, Answering, Done, Working with you, or an error.
+  Transcribing, Thinking, Answering, Working on it, Needs your OK, Done,
+  Working with you, or an error.
   Small grey top line for context (what it sees, the question, the last
   thing heard). Tools (settings, close) appear on hover only. Answer actions
   (Insert, Copy, New) appear only when an answer is finished.
 - **State colours** (`STATES` in `main.js`) drive `--glow`: listening
   `#ffc18f`, transcribing `#ff99a8`, preparing `#ffeb85`, thinking
-  `#c299ff`, answering `#82ff9e`, done/idle `#8ab4ff`, live `#7fe3ff`,
-  error `#ff8f8f`.
+  `#c299ff`, answering `#82ff9e`, acting `#9fe3c4`, confirm `#ffd58a`,
+  done/idle `#8ab4ff`, live `#7fe3ff`, error `#ff8f8f`.
+- **Actions** appear inside the answer as `.msg.act` rows in the order they
+  happen (text before a step stays above it). A step waiting for the user
+  shows the exact text or command and three buttons: Allow, Always allow,
+  Don't. While a step waits the notch stays open (do not auto-collapse).
 - **Background** is `rgba(0,0,0,var(--alpha))`; `--alpha` comes from the
   Transparency setting (0.3–1.0). Text `#f2f3f7`, muted `#8c8c8c`.
 - **Type:** Inter / Segoe UI Variable. Label 15 px semibold, top line
@@ -269,6 +357,16 @@ The app builds and runs on Linux for development; Windows-only parts
 4. Keep `README.md` and this file accurate.
 
 ## Known gaps (not yet verified on real Windows)
+
+- Actions through the whole app: the MCP server, `open_url` in Chrome and
+  the real `claude` and `codex` CLIs were run end to end on Windows from a
+  test harness, but not from the packaged app with voice. Typing, key
+  chords, `focus_window`, `open_app` and the confirmation buttons in the
+  non-focusable notch have not been tried by hand.
+- Codex: MCP servers whose names need quoting (for example `my-server`)
+  cannot be switched off with `-c` and stay available to Codex.
+- Schedules have unit tests for timing but have not fired from the real
+  tray app yet.
 
 - Microphone capture, the Ctrl + Alt hook, paste into other apps, the
   click-through glow window, dragging between edges, and whether the notch
