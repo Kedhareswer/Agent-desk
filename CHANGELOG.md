@@ -10,6 +10,8 @@ the release workflow uses that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-11-19
+
 ### Fixed
 
 - Ctrl + Alt sometimes did nothing while Ctrl + Alt + Space worked. Key
@@ -237,7 +239,8 @@ the release workflow uses that section as the GitHub Release notes.
 - Weekly dependency security audit and Dependabot updates.
 
 
-[Unreleased]: https://github.com/Kedhareswer/Agent-desk/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/Kedhareswer/Agent-desk/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/Kedhareswer/Agent-desk/releases/tag/v0.1.7
 [0.1.6]: https://github.com/Kedhareswer/Agent-desk/releases/tag/v0.1.6
 [0.1.5]: https://github.com/Kedhareswer/Agent-desk/releases/tag/v0.1.5
 [0.1.4]: https://github.com/Kedhareswer/Agent-desk/releases/tag/v0.1.4

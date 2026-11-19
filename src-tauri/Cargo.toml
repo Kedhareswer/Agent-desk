@@ -1,6 +1,6 @@
 [package]
 name = "agent-desk"
-version = "0.1.6"
+version = "0.1.7"
 description = "A lightweight background AI assistant that reuses your Claude or Codex subscription"
 edition = "2021"
 license = "MIT"
