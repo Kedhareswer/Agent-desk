@@ -215,9 +215,9 @@ mod imp {
         SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN,
-        MOUSEEVENTF_LEFTUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL,
-        MOUSEINPUT, MOUSE_EVENT_FLAGS,
+        GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_HWHEEL,
+        MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
+        MOUSEEVENTF_WHEEL, MOUSEINPUT, MOUSE_EVENT_FLAGS, VK_CONTROL, VK_LBUTTON, VK_RBUTTON,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         GetCursorPos, GetForegroundWindow, GetWindowRect, SetCursorPos,
@@ -317,6 +317,20 @@ mod imp {
         let mut r = RECT::default();
         unsafe { GetWindowRect(HWND(hwnd as *mut _), &mut r).ok()? };
         (r.right > r.left && r.bottom > r.top).then_some((r.left, r.top, r.right, r.bottom))
+    }
+
+    /// Is Ctrl held down right now?
+    pub fn ctrl_down() -> bool {
+        unsafe { GetAsyncKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000 != 0 }
+    }
+
+    /// Is a mouse button held down right now (a drag or a selection)?
+    pub fn mouse_down() -> bool {
+        unsafe {
+            (GetAsyncKeyState(VK_LBUTTON.0 as i32) | GetAsyncKeyState(VK_RBUTTON.0 as i32)) as u16
+                & 0x8000
+                != 0
+        }
     }
 
     /// Where the user's cursor is (physical pixels).
@@ -540,6 +554,12 @@ mod imp {
     }
     pub fn cursor_pos() -> (i32, i32) {
         (0, 0)
+    }
+    pub fn ctrl_down() -> bool {
+        false
+    }
+    pub fn mouse_down() -> bool {
+        false
     }
     pub fn window_rect(_hwnd: isize) -> Option<(i32, i32, i32, i32)> {
         None

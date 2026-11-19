@@ -8,6 +8,7 @@ mod dock;
 mod files;
 mod hotkey;
 mod mcp;
+mod passthrough;
 mod platform;
 mod pointer;
 mod recovery;
@@ -1651,7 +1652,8 @@ fn main() {
             tasks::list_schedules,
             tasks::save_schedule,
             tasks::delete_schedule,
-            tasks::run_schedule_now
+            tasks::run_schedule_now,
+            passthrough::set_hit_regions
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -1659,6 +1661,7 @@ fn main() {
             let first_run = !dir.join("settings.json").exists();
             let settings = Settings::load(&dir);
             recovery::install(&dir);
+            passthrough::watch(handle.clone());
             // A request the app was still working on when it last closed.
             let leftover = recovery::load(&dir);
             recovery::clear(&dir);

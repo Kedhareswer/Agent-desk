@@ -15,6 +15,8 @@
     <symbol id="i-insert" viewBox="0 0 24 24"><path d="M9 10 4 15l5 5"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/></symbol>
     <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2.5"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></symbol>
     <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+    <symbol id="i-pin" viewBox="0 0 24 24"><path d="M9 4h6l-1 5 3 3v2H7v-2l3-3-1-5Z"/><path d="M12 14v6"/></symbol>
+    <symbol id="i-speak" viewBox="0 0 24 24"><path d="M4 10v4h3l4 4V6l-4 4H4Z"/><path d="M15 9a4 4 0 0 1 0 6M17.5 6.5a7.5 7.5 0 0 1 0 11"/></symbol>
     <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
   </defs>
 </svg>
@@ -52,13 +54,15 @@
             <button id="insert" title="Paste the answer into the app you were using (Ctrl+Alt+Enter)"><svg class="icon"><use href="#i-insert"/></svg>Insert</button>
             <button id="copy" title="Copy the answer (Ctrl+Shift+C)"><svg class="icon"><use href="#i-copy"/></svg>Copy</button>
             <button id="new-chat" title="New conversation (Ctrl+N)"><svg class="icon"><use href="#i-plus"/></svg>New</button>
+            <button id="speak" title="Read the answer aloud (Ctrl+R)" aria-pressed="false"><svg class="icon"><use href="#i-speak"/></svg><span>Read</span></button>
+            <button id="pin" title="Keep this answer open (Ctrl+P)" aria-pressed="false"><svg class="icon"><use href="#i-pin"/></svg><span>Pin</span></button>
             <span class="spacer"></span>
             <span id="stat"></span>
           </div>
 
 
           <div id="history" hidden>
-            <div class="history-head"><h3>Earlier</h3><span class="spacer"></span><button id="history-clear" type="button">Clear</button></div>
+            <div class="history-head"><h3>Earlier</h3><input id="history-search" type="search" placeholder="Search" spellcheck="false" aria-label="Search earlier answers"><span class="spacer"></span><button id="history-clear" type="button">Clear</button></div>
             <div id="history-list"></div>
             <p id="history-empty" hidden>Nothing yet. Answers you get are kept here, on this computer, so you can read them again.</p>
           </div>

@@ -401,6 +401,127 @@ assert.equal(await page.locator(".act-buttons").count(), 0);
 await emit("action", { ...send, id: 8, turn: 1, status: "ask" });
 assert.equal(await page.locator(".msg.act[data-id='8']").count(), 0);
 
+/* ----- never cut off ----- */
+
+// A long question in the top line used to make the shape wider than the
+// window, so one side was cut off. The shape now always fits.
+{
+  const fits = () => page.evaluate(() => {
+    const shell = document.getElementById("shell").getBoundingClientRect();
+    const notch = document.getElementById("notch").getBoundingClientRect();
+    const content = document.getElementById("content");
+    const sent = window.__fake.calls.filter((c) => c[0] === "resize").at(-1)[1];
+    return { notchW: notch.width, contentW: content.scrollWidth, shellW: shell.width, sentW: sent.width, sentH: sent.height, h: shell.height };
+  });
+  const long = "check whether I'm a top contributor on GitHub across all of my repositories and organisations, then compare it with last year and tell me which repos changed the most and why that might be";
+  const t = await page.evaluate(() => window.__fake.nextTurn());
+  await emit("asked", { turn: t, text: long });
+  await page.waitForTimeout(500);
+  let f = await fits();
+  assert.ok(f.sentW <= 640, `the window asked for fits the 640 px limit (${f.sentW})`);
+  assert.ok(f.contentW <= f.notchW + 1, `nothing pokes out of the shape (${f.contentW} > ${f.notchW})`);
+  assert.ok(await page.evaluate(() => { const n = document.getElementById("top-line"); return n.scrollWidth > n.clientWidth; }), "the question is shortened with an ellipsis");
+  await snap("12b-long-question");
+  await emit("ai", { turn: t, kind: "delta", text: "You're the top contributor on 3 repos. ".repeat(40) });
+  await emit("ai", { turn: t, kind: "done", text: "" });
+  await page.waitForTimeout(600);
+  f = await fits();
+  assert.ok(f.sentW <= 640 && f.sentH <= 640, `a long answer fits too (${f.sentW}x${f.sentH})`);
+  assert.ok(f.contentW <= f.notchW + 1);
+  await snap("12c-long-answer");
+  // Every view fits the window the app allows (640 x 640).
+  for (const [open, close] of [["#open-settings", "#settings-cancel"], ["#open-history", "#open-history"]]) {
+    await page.click(open);
+    await page.waitForTimeout(600);
+    f = await fits();
+    assert.ok(f.sentW <= 640 && f.sentH <= 640, `${open}: fits (${f.sentW}x${f.sentH})`);
+    assert.ok(f.contentW <= f.notchW + 1, `${open}: nothing pokes out`);
+    await page.click(close);
+  }
+}
+
+/* ----- out of the way: click-through ----- */
+
+{
+  const regions = () => page.evaluate(() => window.__fake.calls.filter((c) => c[0] === "set_hit_regions").at(-1)[1].regions);
+  await page.waitForTimeout(500);
+  let r = await regions();
+  const inside = (rect, x, y) => x >= rect[0] && y >= rect[1] && x < rect[0] + rect[2] && y < rect[1] + rect[3];
+  const centre = (sel) => page.evaluate((s) => { const b = document.querySelector(s).getBoundingClientRect(); return [b.left + b.width / 2, b.top + b.height / 2]; }, sel);
+  // The answer text lets the mouse through; its buttons do not.
+  const [tx, ty] = await centre(".msg.ai");
+  assert.ok(!r.controls.some((c) => inside(c, tx, ty)), "the answer is click-through");
+  assert.ok(r.with_ctrl.some((c) => inside(c, tx, ty)), "...unless Ctrl is held");
+  for (const b of ["#copy", "#pin", "#open-history"]) {
+    const [bx, by] = await centre(b);
+    assert.ok(r.controls.some((c) => inside(c, bx, by)), `${b} takes the mouse`);
+  }
+  assert.ok(await page.isVisible("#ctrl-hint"), "a long answer says how to scroll it");
+  // The app reports hover (the window gets none of its own while
+  // click-through): the tools show and the answer is held open.
+  await page.evaluate(() => Object.assign(window, { __tuckMs: 300, __tuckAfterHoverMs: 200 }));
+  await emit("hover", true);
+  assert.ok(await page.evaluate(() => document.getElementById("notch").classList.contains("hover")));
+  await page.waitForTimeout(250);
+  assert.equal(await page.evaluate(() => getComputedStyle(document.getElementById("tools")).opacity), "1", "tools show on hover");
+  const hides = (await calls("hide")).length;
+  await page.keyboard.press("Control+p"); // pin...
+  await page.keyboard.press("Control+p"); // ...and unpin: the clock starts again
+  await page.waitForTimeout(700);
+  assert.equal((await calls("hide")).length, hides, "held open while the cursor is over it");
+  // Pinned: it stays even after the cursor leaves.
+  await page.click("#pin");
+  assert.equal(await page.getAttribute("#pin", "aria-pressed"), "true");
+  assert.equal(await page.textContent("#pin span"), "Pinned");
+  await emit("hover", false);
+  await page.waitForTimeout(900);
+  assert.equal((await calls("hide")).length, hides, "a pinned answer does not tuck away");
+  await snap("13-pinned");
+  await page.click("#pin");
+  await page.mouse.move(5, 690); // the test's own mouse leaves the notch
+  await page.waitForFunction((n) => window.__fake.calls.filter((c) => c[0] === "hide").length > n, hides, { timeout: 3000 });
+  await page.evaluate(() => Object.assign(window, { __tuckMs: 1e9, __tuckAfterHoverMs: 1e9 }));
+  // Typing: the whole notch takes the mouse.
+  await wake(true);
+  await page.waitForTimeout(500);
+  r = await regions();
+  assert.equal(r.controls.length, 1);
+  assert.deepEqual(r.controls[0], r.notch, "while typing, the whole notch");
+  assert.deepEqual(r.with_ctrl, []);
+  await page.keyboard.press("Escape");
+}
+
+/* ----- read aloud, try again ----- */
+
+{
+  await page.evaluate(() => {
+    window.__spoken = [];
+    speechSynthesis.speak = (u) => { window.__spoken.push(u.text); window.__utterance = u; };
+    speechSynthesis.cancel = () => {};
+  });
+  const t = await page.evaluate(() => window.__fake.nextTurn());
+  await wake(false);
+  await emit("asked", { turn: t, text: "how many repos do I have" });
+  await emit("ai", { turn: t, kind: "delta", text: "You have **42** repositories." });
+  await emit("ai", { turn: t, kind: "done", text: "" });
+  await page.click("#speak");
+  assert.deepEqual(await page.evaluate(() => window.__spoken), ["You have 42 repositories."], "reads the text, not the Markdown");
+  assert.equal(await page.textContent("#speak span"), "Stop");
+  await page.evaluate(() => window.__utterance.onend());
+  assert.equal(await page.textContent("#speak span"), "Read", "back to Read when it finishes");
+
+  // A failed question offers to try again with the same words.
+  const t2 = await page.evaluate(() => window.__fake.nextTurn());
+  await emit("asked", { turn: t2, text: "open my GitHub" });
+  await emit("ai", { turn: t2, kind: "error", text: "Claude is not signed in." });
+  assert.ok(await page.isVisible(".msg.error .retry"));
+  await page.click(".msg.error .retry");
+  assert.deepEqual((await calls("ask")).at(-1), { prompt: "open my GitHub", withScreen: false });
+  await page.waitForTimeout(100);
+  await emit("ai", { turn: await page.evaluate(() => state.turn), kind: "done", text: "" });
+  await page.keyboard.press("Control+n");
+}
+
 /* ----- never stuck ----- */
 
 // A step that arrives with no answer in progress does not leave the notch
@@ -469,6 +590,19 @@ assert.equal(await page.locator(".hist .msg.ai script, .hist .msg.ai img").count
   assert.equal(clipped, 0, "no answer is cut off sideways");
 }
 await snap("12-history");
+await page.fill("#history-search", "tokyo");
+assert.deepEqual((await page.locator(".hist").allTextContents()).length, 1, "search narrows the list");
+await page.fill("#history-search", "zzzz nothing");
+assert.equal(await page.locator(".hist").count(), 0);
+assert.equal(await page.textContent("#history-empty"), "Nothing matches.");
+await page.fill("#history-search", "tokyo");
+const asksBefore = (await calls("ask")).length;
+await page.click(".hist-tools button:has-text('Ask again')");
+assert.ok(await page.isHidden("#history"), "asking again closes the history");
+assert.deepEqual((await calls("ask")).at(-1), { prompt: "what time is it in Tokyo", withScreen: false });
+assert.equal((await calls("ask")).length, asksBefore + 1);
+await emit("ai", { turn: await page.evaluate(() => state.turn), kind: "done", text: "" });
+await page.keyboard.press("Control+h");
 await page.keyboard.press("Escape");
 assert.ok(await page.isHidden("#history"), "Escape closes it");
 await page.keyboard.press("Control+h");

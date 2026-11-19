@@ -10,6 +10,29 @@ the release workflow uses that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+### Added
+
+- The notch no longer gets in the way of the mouse. Clicks, scrolling and
+  dragging go straight through it to the app underneath, as if it were not
+  there; only its buttons take the mouse (and the whole notch while you
+  type or have Settings or the history open). Hold Ctrl over a long answer
+  to scroll or select it.
+- Read aloud: the speaker button (or Ctrl + R) reads the answer with
+  Windows' own voices, on your computer.
+- Pin: the pin button (or Ctrl + P) keeps an answer open until you unpin it
+  or ask something new.
+- "Try again" on an error asks the same question again.
+- The history can be searched, and each earlier answer has "Ask again" and
+  "Copy".
+
+### Fixed
+
+- One side of the notch was cut off whenever the question in its top line
+  was long. The shape could grow wider than its window; it now always fits
+  and long questions end in "...".
+- Scrolling could land on the notch instead of the page when the answer
+  covered the middle of the window. It now aims past the notch.
+
 ## [0.1.5] - 2026-11-19
 
 ### Added

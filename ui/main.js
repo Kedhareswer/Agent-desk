@@ -10,7 +10,8 @@ const el = {
   stop: $("stop"), openSettings: $("open-settings"), openHistory: $("open-history"), close: $("close"),
   history: $("history"), historyList: $("history-list"), historyEmpty: $("history-empty"), historyClear: $("history-clear"),
   panel: $("panel"), notice: $("notice"), thread: $("thread"), actions: $("actions"),
-  insert: $("insert"), copy: $("copy"), newChat: $("new-chat"), stat: $("stat"),
+  insert: $("insert"), copy: $("copy"), newChat: $("new-chat"), stat: $("stat"), speak: $("speak"), pin: $("pin"),
+  historySearch: $("history-search"),
   setup: $("setup"), recover: $("recover"),
   settings: $("settings"), settingsMsg: $("settings-msg"), shortcutInput: $("shortcut-input"), settingsCancel: $("settings-cancel"), opacityOut: $("opacity-out"),
 };
@@ -61,6 +62,8 @@ const state = {
   live: false,         // "work with me" mode is on
   quiet: null,         // a live check-in whose answer is not shown yet
   tucked: false,       // the finished answer was put away; only the notch remains
+  hover: false,        // the cursor is over the notch (told by the app: the window is click-through)
+  pinned: false,       // the user asked to keep this answer open
 };
 
 /* ---------- notch ---------- */
@@ -150,7 +153,7 @@ function readingMs(text) {
 
 function canTuck() {
   const typing = document.activeElement === el.prompt && el.notch.dataset.view === "input";
-  return state.phase === "done" && !state.busy && !state.live && !state.asking && !typing &&
+  return state.phase === "done" && !state.busy && !state.live && !state.asking && !typing && !state.pinned && !state.speaking &&
     el.settings.hidden && el.setup.hidden && el.history.hidden && el.notice.hidden;
 }
 
@@ -162,12 +165,12 @@ function scheduleTuck(ms = TUCK_MS()) {
 function tuck() {
   tuckTimer = 0;
   if (!canTuck()) return;
-  if (el.notch.matches(":hover")) return void (tuckTimer = -1); // leaving it starts the clock again
+  if (hovered()) return void (tuckTimer = -1); // leaving it starts the clock again
   state.tucked = true;
   refreshPanel(); // the shape shrinks back to the notch...
   setTimeout(() => {
     if (!state.tucked || !canTuck()) return;
-    if (el.notch.matches(":hover")) tuckTimer = -1; // the mouse came back: go once it leaves
+    if (hovered()) tuckTimer = -1; // the mouse came back: go once it leaves
     else invoke("hide"); // ...then goes
   }, 480);
 }
@@ -180,13 +183,26 @@ function untuck() {
   refreshPanel();
 }
 
-el.notch.addEventListener("mouseenter", () => {
+// The window is click-through, so it gets no hover of its own: the app
+// says when the cursor is over the notch. Real hover counts too.
+const hovered = () => state.hover || el.notch.matches(":hover");
+function hoverStart() {
   if (tuckTimer > 0) {
     clearTimeout(tuckTimer);
     tuckTimer = -1;
   }
+}
+function hoverEnd() {
+  if (tuckTimer === -1 && !hovered()) scheduleTuck(AFTER_HOVER_MS());
+}
+el.notch.addEventListener("mouseenter", hoverStart);
+el.notch.addEventListener("mouseleave", hoverEnd);
+listen("hover", ({ payload }) => {
+  state.hover = payload;
+  el.notch.classList.toggle("hover", payload);
+  payload ? hoverStart() : hoverEnd();
+  showCtrlHint();
 });
-el.notch.addEventListener("mouseleave", () => tuckTimer === -1 && scheduleTuck(AFTER_HOVER_MS()));
 
 function showNotice(text) {
   el.notice.textContent = text || "";
@@ -277,6 +293,8 @@ function beginTurn(shown, quiet = false) {
   state.step = null;
   state.steps = 0;
   state.question = shown;
+  setPinned(false);
+  stopSpeaking();
   state.answerNode = addMessage("ai", "");
   state.answerNode.hidden = true;
   state.askedAt = performance.now();
@@ -439,7 +457,10 @@ function when(at) {
 }
 
 function renderHistory() {
-  const list = loadHistory();
+  const all = loadHistory();
+  const words = el.historySearch.value.toLowerCase().split(/\s+/).filter(Boolean);
+  const list = all.filter((item) => words.every((w) => `${item.q}
+${item.a}`.toLowerCase().includes(w)));
   el.historyList.textContent = "";
   for (const item of list) {
     const row = document.createElement("div");
@@ -461,16 +482,36 @@ function renderHistory() {
       steps.textContent = item.steps === 1 ? "1 step on your computer" : `${item.steps} steps on your computer`;
       row.append(steps);
     }
+    const tools = document.createElement("div");
+    tools.className = "hist-tools";
+    const again = document.createElement("button");
+    again.textContent = "Ask again";
+    again.title = "Ask this question again now";
+    again.addEventListener("click", () => {
+      closeHistory();
+      askText(item.q || "");
+    });
+    const copy = document.createElement("button");
+    copy.textContent = "Copy";
+    copy.addEventListener("click", async () => {
+      await invoke("copy_text", { text: String(item.a || "") });
+      copy.textContent = "Copied";
+    });
+    tools.append(again, copy);
+    row.append(tools);
     el.historyList.append(row);
   }
   el.historyEmpty.hidden = list.length > 0;
-  el.historyClear.hidden = list.length === 0;
+  el.historyEmpty.textContent = all.length ? "Nothing matches." : "Nothing yet. Answers you get are kept here, on this computer, so you can read them again.";
+  el.historyClear.hidden = all.length === 0;
+  el.historySearch.hidden = all.length === 0;
 }
 
 async function openHistory() {
   closeOverlays();
   untuck();
   clearTimeout(tuckTimer);
+  el.historySearch.value = "";
   renderHistory();
   el.history.hidden = false;
   el.historyList.scrollTop = 0;
@@ -493,10 +534,15 @@ async function answerAction(id, decision) {
 async function send() {
   if (state.busy || !el.settings.hidden) return;
   const text = el.prompt.value.trim();
-  const withScreen = state.settings.include_screen && state.context.has_screen;
-  beginTurn(text || "Help with what's on my screen");
   el.prompt.value = "";
   growPrompt();
+  await askText(text, state.settings.include_screen && state.context.has_screen);
+}
+
+// Ask a question in words (typed, retried or asked again from the history).
+async function askText(text, withScreen = false) {
+  if (state.busy) return;
+  beginTurn(text || "Help with what's on my screen");
   state.turn = Infinity; // hold events until the id is known
   try {
     adoptTurn(await invoke("ask", { prompt: text, withScreen }));
@@ -546,6 +592,7 @@ function onAiEvent(payload) {
     settleSteps();
     rest();
     refreshPanel();
+    showCtrlHint();
     morph(); // fit the window exactly now that it has stopped growing
     if (state.phase === "done") scheduleTuck();
   } else if (payload.kind === "error") {
@@ -563,10 +610,126 @@ function fail(message) {
   state.busy = false;
   state.startFresh = true;
   settleSteps();
-  addMessage("error", message);
+  const node = addMessage("error", message);
+  const question = state.question;
+  if (question && !state.live) {
+    const retry = document.createElement("button");
+    retry.className = "retry";
+    retry.textContent = "Try again";
+    retry.addEventListener("click", () => askText(question));
+    node.appendChild(retry);
+  }
   setPhase("error");
   refreshPanel();
   morph();
+}
+
+/* ---------- out of the way: click-through ---------- */
+
+// The notch is visible but lets the mouse through, as if it were not
+// there: clicks, scrolling and dragging reach the app underneath. Only its
+// controls take the mouse; while typing, or with Settings or the history
+// open, the whole notch does; and holding Ctrl over the answer lets the
+// user scroll or select it. The app switches the window as the cursor
+// moves, from the rectangles sent here (window CSS pixels).
+let regionsQueued = false;
+let lastRegions = "";
+function box(node) {
+  if (!node || node.closest("[hidden]") || !node.getClientRects().length) return null;
+  const r = node.getBoundingClientRect();
+  if (r.width < 1 || r.height < 1) return null;
+  return [Math.floor(r.left), Math.floor(r.top), Math.ceil(r.width), Math.ceil(r.height)];
+}
+function sendRegions() {
+  if (regionsQueued) return;
+  regionsQueued = true;
+  requestAnimationFrame(() => {
+    regionsQueued = false;
+    showCtrlHint();
+    const notch = box(el.notch);
+    const whole = !el.settings.hidden || !el.setup.hidden || !el.history.hidden || el.notch.dataset.view === "input";
+    const controls = whole
+      ? [notch]
+      : [...el.notch.querySelectorAll("button, #grip, a[href]")].map(box);
+    const regions = {
+      notch,
+      controls: controls.filter(Boolean),
+      with_ctrl: whole ? [] : [box(el.thread)].filter(Boolean),
+    };
+    const json = JSON.stringify(regions);
+    if (json === lastRegions) return;
+    lastRegions = json;
+    invoke("set_hit_regions", { regions }).catch(() => (lastRegions = ""));
+  });
+}
+// Layout also changes during animations; a cheap check catches the end.
+setInterval(sendRegions, 400);
+
+// A long answer can be scrolled with Ctrl held over it; say so, only when
+// there is more to see.
+const ctrlHint = document.createElement("span");
+ctrlHint.id = "ctrl-hint";
+ctrlHint.textContent = "Hold Ctrl to scroll";
+ctrlHint.hidden = true;
+el.stat.before(ctrlHint);
+function showCtrlHint() {
+  ctrlHint.hidden = !(el.thread.scrollHeight > el.thread.clientHeight + 4);
+}
+
+/* ---------- pin and read aloud ---------- */
+
+// Pin keeps a finished answer on screen until the user unpins it or asks
+// something new.
+function setPinned(on) {
+  state.pinned = on;
+  el.pin.setAttribute("aria-pressed", String(on));
+  el.pin.querySelector("span").textContent = on ? "Pinned" : "Pin";
+  el.pin.setAttribute("aria-label", on ? "Unpin this answer" : "Keep this answer open");
+  if (on) {
+    clearTimeout(tuckTimer);
+    tuckTimer = 0;
+  } else if (state.phase === "done" && !state.busy) {
+    scheduleTuck();
+  }
+}
+
+// Read the answer aloud with Windows' own voices (on the device, nothing
+// is sent anywhere). The notch stays open while it speaks.
+const canSpeak = "speechSynthesis" in window;
+el.speak.hidden = !canSpeak;
+function answerText() {
+  return [...el.thread.querySelectorAll(".msg.ai")].map((n) => n.textContent.trim()).filter(Boolean).join("\n\n");
+}
+function stopSpeaking() {
+  if (!canSpeak) return;
+  state.speaking = false;
+  speechSynthesis.cancel();
+  el.speak.setAttribute("aria-pressed", "false");
+  el.speak.querySelector("span").textContent = "Read";
+}
+function toggleSpeaking() {
+  if (!canSpeak || state.busy) return;
+  if (state.speaking) {
+    stopSpeaking();
+    if (state.phase === "done") scheduleTuck();
+    return;
+  }
+  const text = answerText();
+  if (!text) return;
+  const say = new SpeechSynthesisUtterance(text);
+  say.rate = 1.05;
+  say.onend = say.onerror = () => {
+    if (!state.speaking) return;
+    stopSpeaking();
+    if (state.phase === "done") scheduleTuck();
+  };
+  state.speaking = true;
+  clearTimeout(tuckTimer);
+  tuckTimer = 0;
+  el.speak.setAttribute("aria-pressed", "true");
+  el.speak.querySelector("span").textContent = "Stop";
+  speechSynthesis.cancel();
+  speechSynthesis.speak(say);
 }
 
 /* ---------- never stuck ---------- */
@@ -1124,8 +1287,14 @@ async function saveScheduleEditor() {
 
 el.prompt.addEventListener("input", growPrompt);
 el.stop.addEventListener("click", stop);
-el.close.addEventListener("click", () => invoke("hide"));
+el.close.addEventListener("click", () => {
+  stopSpeaking();
+  invoke("hide");
+});
 el.newChat.addEventListener("click", newChat);
+el.speak.addEventListener("click", toggleSpeaking);
+el.pin.addEventListener("click", () => setPinned(!state.pinned));
+el.historySearch.addEventListener("input", renderHistory);
 el.insert.addEventListener("click", insertAnswer);
 el.copy.addEventListener("click", copyAnswer);
 el.openSettings.addEventListener("click", () => (el.settings.hidden ? openSettings() : closeSettings()));
@@ -1264,6 +1433,12 @@ document.addEventListener("keydown", (e) => {
   } else if (ctrl && e.shiftKey && e.key.toLowerCase() === "c") {
     e.preventDefault();
     copyAnswer();
+  } else if (ctrl && !e.shiftKey && e.key.toLowerCase() === "r") {
+    e.preventDefault();
+    toggleSpeaking();
+  } else if (ctrl && !e.shiftKey && e.key.toLowerCase() === "p") {
+    e.preventDefault();
+    setPinned(!state.pinned);
   } else if (ctrl && !e.shiftKey && e.key.toLowerCase() === "h") {
     e.preventDefault();
     el.history.hidden ? openHistory() : closeHistory();
@@ -1316,6 +1491,7 @@ function morph() {
   clearTimeout(shrinkTimer);
   setWindow(Math.max(windowSize.w, need.w), Math.max(windowSize.h, need.h));
   if (!state.busy && (need.w < windowSize.w || need.h < windowSize.h)) shrinkTimer = setTimeout(() => setWindow(need.w, need.h), 460);
+  sendRegions();
 }
 new ResizeObserver(morph).observe(el.content);
 

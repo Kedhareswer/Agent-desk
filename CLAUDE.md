@@ -27,7 +27,8 @@ asking:
    notch are the larger part and are asked to release memory while hidden). AI process and speech model are released after a few idle
    minutes (`keep_warm_minutes`).
 3. **Out of the way.** No taskbar window. Never steal focus unless the user
-   is typing. Collapsed, it is only the notch.
+   is typing. Collapsed, it is only the notch. The mouse goes through it
+   (`passthrough.rs`) except over its controls.
 4. **Voice first, typing second.** Hold to talk is the main path; a tap
    opens the notch for typing.
 5. **Private.** Speech is transcribed on the device. The overlay is excluded
@@ -91,6 +92,9 @@ src-tauri/                  Rust (Tauri 2) – all system work
                             detection (installer / Scoop / manual)
   cross/                    Linux → Windows cross-build script and MinGW shim
   src/pointer.rs            Agent Desk's own labelled pointer window
+  src/passthrough.rs        Click-through notch: switches the window between
+                            click-through and normal as the cursor moves
+                            over its controls; reports hover to the UI
   tauri.conf.json           Windows: "main" (notch), "glow", "pointer"
 ui/                         Plain HTML/CSS/JS – no framework, no build step
   index.html                The notch: #notch > #clip > #content > #head + #panel
@@ -118,7 +122,7 @@ bucket/agent-desk.json      Scoop manifest, written by the release workflow
   `save_settings`, `status`, `ask`, `stop`, `new_chat`, `hide`, `resize`,
   `focus`, `copy_text`, `insert_text`, `answer_action`, `list_schedules`,
   `save_schedule`, `delete_schedule`, `run_schedule_now`, `setup_info`,
-  `list_models`, `download_speech`.
+  `list_models`, `download_speech`, `set_hit_regions` (passthrough.rs).
 - **Rust → UI:** events emitted to the `main` window:
   - `ai` `{turn, kind: delta|done|error, text}` answer stream
   - `phase` `{phase: listening|transcribing|preparing|cancelled|error, text}`
@@ -133,6 +137,8 @@ bucket/agent-desk.json      Scoop manifest, written by the release workflow
   - `open-setup` show the setup screen (first launch until `setup_done`,
     tray "Setup and guide", Settings button).
   - `speech-progress` `{model, pct, done, error}` speech model download.
+  - `hover` (bool) the cursor is over the notch (the window is
+    click-through, so it has no hover of its own).
   - `wake` `{title, process, has_screen, typing}`, `refocus`, `level`
     (0–1 loudness; not drawn any more), `live` (bool), `live-heard` `{who, text}`, `live-note`,
     `insert-request`, `open-settings`, `settings-changed`.
@@ -397,6 +403,19 @@ edge, a soft screen-edge glow while listening.
   wash. It is a separate click-through window, on while listening and,
   in the working colour, while Agent Desk acts on the computer
   (`working()`; off when the answer ends or is stopped).
+- **Click-through.** The notch window lets the mouse through except over
+  its controls: `sendRegions()` in `main.js` sends the rectangles of
+  buttons and the grip (the whole notch while typing or with Settings, the
+  history or setup open; the answer only while Ctrl is held) through
+  `set_hit_regions`, and `passthrough::watch` polls the cursor every 40 ms
+  while the notch is visible and calls `set_ignore_cursor_events` only on
+  change (never while a mouse button is held). A click-through window gets
+  no hover, so the app emits `hover` and the UI uses `state.hover` /
+  `.hover` instead of `:hover` for the tools and holding the answer open.
+- **Fits its window.** The native window is at most 640 x 640 logical
+  pixels (`MAX_WIDTH`/`MAX_HEIGHT`); the shape must never be wider than
+  600 + the ears (`#head` has `max-width: 600px`, the top line ends in an
+  ellipsis). The UI test checks every view against that limit.
 - **Never take the user's mouse.** Agent Desk shows its own pointer (the
   click-through "pointer" window, an arrow labelled "Agent Desk" whose
   tip is the window's corner, placed 1 px past the target so it never
