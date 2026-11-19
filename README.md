@@ -110,6 +110,9 @@ signed yet, so Windows SmartScreen asks you to confirm the first time.
 | <kbd>Ctrl</kbd> + <kbd>N</kbd> | New conversation |
 | <kbd>Ctrl</kbd> + <kbd>,</kbd> | Settings |
 | <kbd>Ctrl</kbd> + <kbd>H</kbd> | Earlier answers |
+| <kbd>Ctrl</kbd> + <kbd>R</kbd> | Read the answer aloud |
+| <kbd>Ctrl</kbd> + <kbd>P</kbd> | Pin the answer open |
+| <kbd>Ctrl</kbd> (hold over the answer) | Scroll or select a long answer; otherwise the mouse goes through the notch |
 | <kbd>Esc</kbd> | Stop the answer, then hide |
 
 Prefer a different key? Set your own shortcut in Settings (default

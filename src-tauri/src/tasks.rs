@@ -370,19 +370,37 @@ fn scroll_window(app: &AppHandle) -> Option<isize> {
     (hwnd != 0).then_some(hwnd)
 }
 
+type Bounds = (i32, i32, i32, i32);
+
 /// Where to scroll: the last spot pointed at if it lies inside the window,
 /// otherwise a little below the middle of it (past toolbars and tabs).
+/// Never a spot under the notch: the wheel would go to the notch instead.
 fn scroll_point(
     last: Option<(i32, i32)>,
-    rect: Option<(i32, i32, i32, i32)>,
+    rect: Option<Bounds>,
+    notch: Option<Bounds>,
 ) -> Option<(i32, i32)> {
     let (l, t, r, b) = rect?;
+    let under = |(x, y): (i32, i32)| {
+        notch.is_some_and(|(nl, nt, nr, nb)| x >= nl && x < nr && y >= nt && y < nb)
+    };
     if let Some((x, y)) = last {
-        if x > l && x < r && y > t && y < b {
+        if x > l && x < r && y > t && y < b && !under((x, y)) {
             return Some((x, y));
         }
     }
-    Some(((l + r) / 2, t + (b - t) * 3 / 5))
+    let mut p = ((l + r) / 2, t + (b - t) * 3 / 5);
+    if let Some((nl, _, nr, nb)) = notch.filter(|_| under(p)) {
+        // Below the notch if the window reaches that far, else beside it.
+        p = if nb + 40 < b {
+            (p.0, nb + 40)
+        } else if nl - 40 > l {
+            (nl - 40, p.1)
+        } else {
+            (nr + 40, p.1)
+        };
+    }
+    Some(p)
 }
 
 /// Put the text cursor in a text box: by UI Automation, or a brief click.
@@ -740,7 +758,8 @@ fn execute(
             // the user's own mouse happens to be.
             let window = scroll_window(app);
             let rect = window.and_then(uia::window_rect);
-            let (x, y) = scroll_point(crate::pointer::last(), rect)
+            let notch = overlay(app).and_then(|w| uia::window_rect(own_hwnd(&w)));
+            let (x, y) = scroll_point(crate::pointer::last(), rect, notch)
                 .ok_or("There is no window to scroll. Open or switch to it first.")?;
             crate::pointer::glide(app, x, y);
             uia::at_point(x, y, || uia::scroll(*lines, *horizontal));
@@ -1028,10 +1047,21 @@ mod tests {
     fn scrolling_is_aimed_inside_the_window() {
         let window = Some((100, 50, 1100, 850));
         // The last spot pointed at, when it is in the window.
-        assert_eq!(scroll_point(Some((400, 300)), window), Some((400, 300)));
+        assert_eq!(
+            scroll_point(Some((400, 300)), window, None),
+            Some((400, 300))
+        );
         // Otherwise the middle, a little low (past tabs and toolbars).
-        assert_eq!(scroll_point(Some((5, 5)), window), Some((600, 530)));
-        assert_eq!(scroll_point(None, window), Some((600, 530)));
-        assert_eq!(scroll_point(Some((400, 300)), None), None);
+        assert_eq!(scroll_point(Some((5, 5)), window, None), Some((600, 530)));
+        assert_eq!(scroll_point(None, window, None), Some((600, 530)));
+        assert_eq!(scroll_point(Some((400, 300)), None, None), None);
+        // Never under the notch: below it, or beside it when it is tall.
+        let notch = Some((300, 0, 900, 600));
+        assert_eq!(
+            scroll_point(Some((400, 300)), window, notch),
+            Some((600, 640))
+        );
+        let tall = Some((300, 0, 900, 840));
+        assert_eq!(scroll_point(None, window, tall), Some((260, 530)));
     }
 }

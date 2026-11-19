@@ -16,6 +16,7 @@
     "allow-take-recovery",
     "allow-resume-task",
     "allow-dismiss-recovery",
+    "allow-set-hit-regions",
     "allow-new-chat",
     "allow-hide",
     "allow-resize",

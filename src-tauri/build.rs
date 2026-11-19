@@ -12,6 +12,7 @@ fn main() {
             "take_recovery",
             "resume_task",
             "dismiss_recovery",
+            "set_hit_regions",
             "new_chat",
             "hide",
             "resize",
