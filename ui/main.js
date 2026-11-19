@@ -10,7 +10,7 @@ const el = {
   stop: $("stop"), openSettings: $("open-settings"), close: $("close"),
   panel: $("panel"), notice: $("notice"), thread: $("thread"), actions: $("actions"),
   insert: $("insert"), copy: $("copy"), newChat: $("new-chat"), stat: $("stat"),
-  setup: $("setup"),
+  setup: $("setup"), recover: $("recover"),
   settings: $("settings"), settingsMsg: $("settings-msg"), shortcutInput: $("shortcut-input"), settingsCancel: $("settings-cancel"), opacityOut: $("opacity-out"),
 };
 
@@ -27,6 +27,7 @@ const STATES = {
   acting: ["Working on it", "#9fe3c4"],
   live: ["Working with you", "#7fe3ff"],
   error: ["Couldn't do that", "#ff8f8f"],
+  interrupted: ["Stopped unexpectedly", "#ffd58a"],
 };
 const MODELS = { haiku: "Haiku", sonnet: "Sonnet", opus: "Opus" };
 const TEXT_FIELDS = ["wake_mode", "shortcut", "live_shortcut", "provider", "claude_model", "codex_model", "claude_path", "codex_path", "voice_model", "dock_edge"];
@@ -119,7 +120,8 @@ function refreshPanel() {
   const hasAnswer = !state.tucked && !state.busy && state.answer.trim().length > 0;
   el.thread.hidden = !hasThread || settingsOpen;
   el.actions.hidden = !hasAnswer || settingsOpen;
-  el.panel.hidden = el.thread.hidden && el.actions.hidden && el.notice.hidden && !settingsOpen;
+  el.recover.hidden ||= settingsOpen;
+  el.panel.hidden = el.thread.hidden && el.actions.hidden && el.notice.hidden && el.recover.hidden && !settingsOpen;
   el.notch.classList.toggle("settings-open", settingsOpen);
   el.openSettings.classList.toggle("active", settingsOpen);
   el.stop.hidden = !state.busy;
@@ -246,6 +248,7 @@ function beginTurn(shown, quiet = false) {
   if (state.startFresh) clearThread();
   if (!quiet) showNotice("");
   if (!quiet) closeOverlays();
+  if (!quiet && state.recovering) dismissRecovery(); // a new request replaces the old one
   untuck();
   // Only the latest question and answer are shown; the AI still remembers
   // the earlier ones. The question itself is in the notch's top line.
@@ -568,6 +571,55 @@ function acceleratorFrom(e) {
 // is the tool installed, who is signed in, which models, which speech
 // models are downloaded. Nothing is saved until "Start using Agent Desk".
 const setup = { info: null, models: {}, provider: "claude", modelPick: {} };
+
+/* ---------- after a crash ---------- */
+
+// If the app closed in the middle of a request, it offers to continue it
+// once it is running again. It asks rather than redoing it, because some
+// steps (opening a page, typing) may already have happened.
+async function offerRecovery() {
+  const r = await invoke("take_recovery").catch(() => null);
+  if (!r) return;
+  state.recovering = r.prompt;
+  const mins = Math.round(r.seconds_ago / 60);
+  const when = mins < 1 ? "just now" : mins === 1 ? "a minute ago" : `${mins} minutes ago`;
+  $("recover-text").textContent = `Agent Desk closed unexpectedly ${when} while working on this. Continue where it left off?`;
+  el.recover.hidden = false;
+  setPhase("interrupted", r.prompt);
+  refreshPanel();
+}
+
+function hideRecovery() {
+  state.recovering = null;
+  el.recover.hidden = true;
+  refreshPanel();
+}
+
+function dismissRecovery() {
+  hideRecovery();
+  invoke("dismiss_recovery");
+}
+
+async function resumeTask() {
+  const prompt = state.recovering;
+  if (!prompt) return;
+  hideRecovery();
+  beginTurn(prompt);
+  state.turn = Infinity; // hold events until the id is known
+  try {
+    adoptTurn(await invoke("resume_task"));
+  } catch (err) {
+    state.turn = 0;
+    fail(String(err));
+  }
+}
+
+$("recover-go").addEventListener("click", resumeTask);
+$("recover-no").addEventListener("click", () => {
+  dismissRecovery();
+  rest();
+  invoke("hide");
+});
 
 function closeOverlays() {
   if (!el.settings.hidden) closeSettings();
@@ -1223,4 +1275,5 @@ listen("settings-changed", ({ payload }) => {
   refreshPanel();
   growPrompt();
   checkStatus();
+  offerRecovery();
 })();

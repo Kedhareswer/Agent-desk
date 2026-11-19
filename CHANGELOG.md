@@ -10,6 +10,16 @@ the release workflow uses that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+### Added
+
+- Crash recovery. If Agent Desk closes unexpectedly, Windows starts it again,
+  and the notch offers to continue the request it was working on
+  ("Continue" or "Not now"). It asks instead of redoing it by itself, and the
+  AI is told to check the screen first so nothing is done twice. If only the
+  AI process stops part-way, the request is sent again once, automatically.
+- `crash.log` in the settings folder records what failed and where (never
+  what you said), so crashes can be diagnosed.
+
 ### Fixed
 
 - Agent Desk closed itself right after "Transcribing" on many computers,

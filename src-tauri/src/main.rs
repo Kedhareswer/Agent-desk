@@ -9,6 +9,7 @@ mod files;
 mod hotkey;
 mod mcp;
 mod platform;
+mod recovery;
 mod schedule;
 mod settings;
 mod setup;
@@ -121,6 +122,12 @@ struct Screen {
 
 struct App {
     dir: PathBuf,
+    /// The request being answered, kept on disk until it finishes.
+    task: Mutex<Option<recovery::Pending>>,
+    /// Highest turn whose answer has finished.
+    finished_turn: AtomicU64,
+    /// A request left unfinished when the app last closed, not yet offered.
+    recovered: Mutex<Option<recovery::Pending>>,
     /// Actions waiting for the user's OK, by action id.
     pending: Mutex<HashMap<u64, std::sync::mpsc::Sender<tasks::Decision>>>,
     action_ids: AtomicU64,
@@ -488,7 +495,130 @@ fn glow(app: &AppHandle, on: bool) {
 
 /* ---------- asking ---------- */
 
+/// Send a request the user made. It is remembered until its answer has
+/// finished, so it can be continued if the app or the AI process dies
+/// part-way (see recovery.rs).
 fn send_question(app: &AppHandle, prompt: &str, with_screen: bool) -> Result<u64, String> {
+    send_tracked(app, prompt, prompt, with_screen, false)
+}
+
+/// `request` is what the user asked; `sent` is what goes to the AI (the same,
+/// or with a note that this is another attempt).
+fn send_tracked(
+    app: &AppHandle,
+    request: &str,
+    sent: &str,
+    with_screen: bool,
+    retried: bool,
+) -> Result<u64, String> {
+    let state = app.state::<App>();
+    // Live mode is a running conversation, not one task to come back to.
+    if is_live(app) {
+        return send_raw(app, sent, with_screen);
+    }
+    let mut pending = recovery::Pending {
+        turn: 0,
+        prompt: request.to_string(),
+        at: recovery::now(),
+        retried,
+    };
+    {
+        let mut task = state.task.lock().unwrap();
+        recovery::save(&state.dir, &pending);
+        *task = Some(pending.clone());
+    }
+    let result = send_raw(app, sent, with_screen);
+    let mut task = state.task.lock().unwrap();
+    match &result {
+        // Still working on it: remember which answer to wait for.
+        Ok(turn) if state.finished_turn.load(Ordering::SeqCst) < *turn => {
+            pending.turn = *turn;
+            recovery::save(&state.dir, &pending);
+            *task = Some(pending);
+        }
+        // Already finished, or never sent.
+        _ => {
+            recovery::clear(&state.dir);
+            *task = None;
+        }
+    }
+    result
+}
+
+/// An answer has finished (done, error or stopped): nothing to recover.
+/// `u64::MAX` means whatever is in progress.
+fn task_finished(app: &AppHandle, turn: u64) {
+    let state = app.state::<App>();
+    let mut task = state.task.lock().unwrap();
+    if turn != u64::MAX {
+        state.finished_turn.fetch_max(turn, Ordering::SeqCst);
+    }
+    if task
+        .as_ref()
+        .is_some_and(|p| p.turn == turn || turn == u64::MAX)
+    {
+        recovery::clear(&state.dir);
+        *task = None;
+    }
+}
+
+/// The AI process died in the middle of an answer. Send the request once
+/// more to a fresh process; if that was already the second try, say so.
+fn answer_lost(app: &AppHandle, event: AiEvent) {
+    let state = app.state::<App>();
+    let again = state
+        .task
+        .lock()
+        .unwrap()
+        .as_ref()
+        .filter(|p| p.turn == event.turn && !p.retried)
+        .cloned();
+    let Some(pending) = again else {
+        task_finished(app, event.turn);
+        let _ = app.emit_to(
+            "main",
+            "ai",
+            AiEvent {
+                kind: "error",
+                ..event
+            },
+        );
+        return;
+    };
+    recovery::log("the AI process stopped during an answer; sending the request again");
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        let sent = recovery::retry_prompt(&pending.prompt);
+        match send_tracked(&app, &pending.prompt, &sent, false, true) {
+            Ok(turn) => {
+                let _ = app.emit_to(
+                    "main",
+                    "asked",
+                    Asked {
+                        turn,
+                        text: pending.prompt.clone(),
+                        quiet: false,
+                        scheduled: false,
+                    },
+                );
+            }
+            Err(message) => {
+                let _ = app.emit_to(
+                    "main",
+                    "ai",
+                    AiEvent {
+                        turn: event.turn,
+                        kind: "error",
+                        text: message,
+                    },
+                );
+            }
+        }
+    });
+}
+
+fn send_raw(app: &AppHandle, prompt: &str, with_screen: bool) -> Result<u64, String> {
     let state = app.state::<App>();
     let s = state.settings.lock().unwrap().clone();
     let (title, process, shot, shot_window) = {
@@ -1122,13 +1252,51 @@ fn ask(app: AppHandle, prompt: String, with_screen: bool) -> Result<u64, String>
 }
 
 #[tauri::command(async)]
-fn stop(state: State<App>) {
+fn stop(app: AppHandle, state: State<App>) {
     tasks::deny_all(&state);
     state.engine.stop();
+    task_finished(&app, u64::MAX);
+}
+
+/// A request left unfinished when the app last closed, offered once.
+#[derive(Serialize)]
+struct Recovered {
+    prompt: String,
+    seconds_ago: u64,
+}
+
+#[tauri::command]
+fn take_recovery(state: State<App>) -> Option<Recovered> {
+    let pending = state.recovered.lock().unwrap().clone()?;
+    Some(Recovered {
+        seconds_ago: recovery::now().saturating_sub(pending.at),
+        prompt: pending.prompt,
+    })
+}
+
+/// Continue the request that was interrupted, with a fresh look at the screen.
+#[tauri::command(async)]
+fn resume_task(app: AppHandle) -> Result<u64, String> {
+    let state = app.state::<App>();
+    let pending = state
+        .recovered
+        .lock()
+        .unwrap()
+        .take()
+        .ok_or("There is nothing to continue.")?;
+    capture_context(&app);
+    let sent = recovery::resume_prompt(&pending.prompt);
+    send_tracked(&app, &pending.prompt, &sent, true, false)
+}
+
+#[tauri::command]
+fn dismiss_recovery(state: State<App>) {
+    state.recovered.lock().unwrap().take();
 }
 
 #[tauri::command(async)]
 fn new_chat(app: AppHandle, state: State<App>) {
+    task_finished(&app, u64::MAX);
     let live = is_live(&app);
     tasks::deny_all(&state);
     tasks::forget_conversation(&state);
@@ -1442,6 +1610,9 @@ fn main() {
             status,
             ask,
             stop,
+            take_recovery,
+            resume_task,
+            dismiss_recovery,
             new_chat,
             hide,
             resize,
@@ -1462,9 +1633,19 @@ fn main() {
             let dir = app.path().app_config_dir()?;
             let first_run = !dir.join("settings.json").exists();
             let settings = Settings::load(&dir);
+            recovery::install(&dir);
+            // A request the app was still working on when it last closed.
+            let leftover = recovery::load(&dir);
+            recovery::clear(&dir);
+            let leftover = leftover.filter(|p| recovery::worth_offering(p, recovery::now()));
 
             let emitter = handle.clone();
             let emit: Arc<dyn Fn(AiEvent) + Send + Sync> = Arc::new(move |event| {
+                match event.kind {
+                    "lost" => return answer_lost(&emitter, event),
+                    "done" | "error" => task_finished(&emitter, event.turn),
+                    _ => {}
+                }
                 let _ = emitter.emit_to("main", "ai", event);
             });
             app.manage(App {
@@ -1498,6 +1679,9 @@ fn main() {
                 live_item: Mutex::new(None),
                 updates: update::Updates::default(),
                 update_item: Mutex::new(None),
+                task: Mutex::new(None),
+                finished_turn: AtomicU64::new(0),
+                recovered: Mutex::new(leftover.clone()),
             });
 
             build_tray(&handle, settings.hide_from_capture)?;
@@ -1582,6 +1766,10 @@ fn main() {
                 let info = capture_context(&handle);
                 show_overlay(&handle, true, info);
                 let _ = handle.emit_to("main", "open-setup", ());
+            } else if leftover.is_some() {
+                // The notch asks whether to continue (see take_recovery).
+                let info = capture_context(&handle);
+                show_overlay(&handle, false, info);
             }
             // The glow window starts hidden: keep its memory low until used.
             if let Some(glow) = handle.get_webview_window("glow") {

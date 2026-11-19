@@ -56,6 +56,8 @@ const fake = () => {
         if (cmd === "list_models") return args.provider === "codex"
           ? [{ id: "gpt-6.2-sol", name: "GPT-6.2-Sol", description: "Fast, go-to model." }, { id: "gpt-6.2-astra", name: "GPT-6.2-Astra", description: "Most capable." }]
           : [{ id: "haiku", name: "Haiku", description: "Fastest. Best for voice. Now: claude-haiku-5-5." }, { id: "sonnet", name: "Sonnet", description: "Balanced." }, { id: "opus", name: "Opus", description: "Most capable." }];
+        if (cmd === "take_recovery") return window.__fake.recovery || null;
+        if (cmd === "resume_task") { turn += 1; return turn; }
         if (cmd === "list_schedules") return schedules;
         if (cmd === "save_schedule") {
           const item = { ...args.schedule, id: args.schedule.id || schedules.length + 1 };
@@ -625,6 +627,44 @@ await page.addInitScript(() => (window.__fake.cliFound = false));
 await page.reload();
 await page.waitForSelector("#notice:not([hidden])");
 assert.match(await page.textContent("#notice"), /not found/);
+
+/* ----- after a crash: offer to continue ----- */
+{
+  const open = async (recovery) => {
+    const p = await browser.newPage({ viewport: { width: 720, height: 700 }, deviceScaleFactor: shots ? 2 : 1 });
+    p.on("pageerror", (e) => errors.push(e.message));
+    await p.addInitScript(fake);
+    await p.addInitScript((r) => document.addEventListener("DOMContentLoaded", () => {
+      window.__fake.recovery = r;
+      document.documentElement.style.background = "linear-gradient(135deg, #d9d4c7, #b9c4d6)";
+      document.getElementById("shell").style.margin = "0 auto";
+    }), recovery);
+    await p.goto("file://" + path.join(root, "ui/index.html"));
+    await p.waitForSelector("#recover:not([hidden])");
+    return p;
+  };
+  let p = await open({ prompt: "open my GitHub and count my repos", seconds_ago: 130 });
+  assert.equal(await p.getAttribute("#notch", "data-state"), "interrupted");
+  assert.equal(await p.textContent("#label"), "Stopped unexpectedly");
+  assert.equal(await p.textContent("#top-line"), "open my GitHub and count my repos");
+  assert.match(await p.textContent("#recover-text"), /closed unexpectedly 2 minutes ago/);
+  if (shots) { await p.waitForTimeout(700); await p.screenshot({ path: path.join(shots, "15-recover.png") }); }
+  await p.click("#recover-go");
+  const resumed = await p.evaluate(() => window.__fake.calls.filter((c) => c[0] === "resume_task").length);
+  assert.equal(resumed, 1, "Continue resends the request");
+  assert.ok(await p.isHidden("#recover"));
+  assert.equal(await p.getAttribute("#notch", "data-state"), "thinking");
+  assert.equal(await p.textContent("#top-line"), "open my GitHub and count my repos");
+  await p.close();
+  // Not now: forget it and hide.
+  p = await open({ prompt: "x", seconds_ago: 5 });
+  assert.match(await p.textContent("#recover-text"), /just now/);
+  await p.click("#recover-no");
+  const calls2 = await p.evaluate(() => window.__fake.calls.map((c) => c[0]));
+  assert.ok(calls2.includes("dismiss_recovery") && calls2.includes("hide"));
+  assert.ok(await p.isHidden("#recover"));
+  await p.close();
+}
 
 /* ----- the glow page ----- */
 const glow = await browser.newPage({ viewport: { width: 736, height: 414 }, deviceScaleFactor: shots ? 2 : 1 });

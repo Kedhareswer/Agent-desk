@@ -303,6 +303,27 @@ bucket/agent-desk.json      Scoop manifest, written by the release workflow
 - Recording starts on key **down** so the first word is not lost; the UI
   only shows "Listening" once the hold passes the tap threshold.
 
+## Crash recovery
+
+`recovery.rs`. Keep all three parts:
+
+- `RegisterApplicationRestart` makes Windows restart the app after a crash
+  or hang (only once it has run for a minute, so a start-up crash cannot
+  loop). A panic hook and an unhandled-exception filter write one line to
+  `<config>/crash.log`: what failed and where, never user text.
+- `send_question` goes through `send_tracked`, which keeps the request in
+  `<config>/pending-task.json` until its answer is done, errors or is
+  stopped (`task_finished`). On start a recent one (15 min) is offered once
+  in the notch (`take_recovery` / `resume_task` / `dismiss_recovery`). It is
+  never resent without the user saying Continue, because steps may already
+  have run; the resent prompt tells the AI to check the screen first.
+- When the Claude process dies mid-answer the backend emits `lost`, and
+  main.rs resends the request once to a fresh process (`answer_lost`); a
+  second loss becomes an ordinary error. The UI never sees `lost`.
+- whisper.cpp is built for AVX2/FMA/F16C (`GGML_*` in the workflows),
+  never `GGML_NATIVE`: GitHub's runners have AVX-512 and a native build
+  crashes on CPUs without it. `stt::cpu_supported` checks before loading.
+
 ## Keyboard rules
 
 - Windows cannot register a modifier-only hotkey, so Ctrl + Alt uses a
