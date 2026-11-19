@@ -1,5 +1,5 @@
 {
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Voice-first AI assistant that answers through your Claude or ChatGPT subscription.",
   "homepage": "https://github.com/Kedhareswer/Agent-desk",
   "license": "MIT",
@@ -9,8 +9,8 @@
   ],
   "architecture": {
     "64bit": {
-      "url": "https://github.com/Kedhareswer/Agent-desk/releases/download/v0.1.4/Agent-Desk_0.1.4_x64-portable.zip",
-      "hash": "b83f6dc8628addb1db05cb2ebeb4dbe97212bb21ef8b6b2551ae7377051908ce"
+      "url": "https://github.com/Kedhareswer/Agent-desk/releases/download/v0.1.5/Agent-Desk_0.1.5_x64-portable.zip",
+      "hash": "88eb6e70241cc5131254e4e2f46cbafc785cf170eb3c3e46276b5090fce15e28"
     }
   },
   "bin": "agent-desk.exe",
